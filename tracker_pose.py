@@ -32,20 +32,25 @@ if camera_type == "color":
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(40)
     inputFrameShape = cam.getPreviewSize()
+    cameraBoardSocket = dai.CameraBoardSocket.RGB
 else: 
     cam = pipeline.create(dai.node.MonoCamera)
     cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     cam.setFps(120)
     inputFrameShape = cam.getResolutionSize()
     if camera_type == "mono_left":
-        cam.setBoardSocket(dai.CameraBoardSocket.LEFT)
+        cameraBoardSocket = dai.CameraBoardSocket.LEFT
     elif camera_type == "mono_right":
-        cam.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+        cameraBoardSocket = dai.CameraBoardSocket.RIGHT
     else: 
         print("Unknown camera type: " + camera_type)
         print("Allowable options: color, mono_left, mono_right")
         sys.exit()
 
+    # Set the mono board socket
+    # Did it this way because I refer to cameraBoardSocket later.
+    cam.setBoardSocket(cameraBoardSocket)
+    
 # Image manipulator node for setting data type
 manip = pipeline.create(dai.node.ImageManip)
 manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
@@ -103,6 +108,16 @@ else:
 
 # Connect and start pipeline
 with dai.Device(pipeline) as device:
+
+    # Get camera calibration info
+    calibData = device.readCalibration()
+
+    # 3x3 matrix of [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]
+    camera_matrix = np.array(calibData.getCameraIntrinsics(cameraBoardSocket, resizeWidth=inputFrameShape[0], resizeHeight=inputFrameShape[1]))
+
+    # vector of distortion coefficients (k1,k2,p1,p2,k3,k4,k5,k6,s1,s2,s3,s4)
+    camera_distortion = np.array(calibData.getDistortionCoefficients(cameraBoardSocket))[:-2]
+
     qImageOut = device.getOutputQueue(name="imageOut", maxSize=4, blocking=False)
     qDetectionsIn = device.getInputQueue(name="inDetections", maxSize=4, blocking=False)
     qTracklets = device.getOutputQueue(name="trackletsOut", maxSize=4, blocking=False)
@@ -125,15 +140,19 @@ with dai.Device(pipeline) as device:
 
         # Detect the aruco markers
         (corners_all, ids, rejected) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=arucoParams)
-
+        
         if len(corners_all) > 0:
+            rvec, tvec, obj_pts = cv2.aruco.estimatePoseSingleMarkers(corners_all, 0.040, camera_matrix, camera_distortion)
+            
+            # set_trace()
+
             # Initialize min and max coordinates for 
             # the bounding box around the entire cube
             xmin = np.inf
             xmax = 0
             ymin = np.inf
             ymax = 0
-            for tag_corners in corners_all:
+            for i, tag_corners in enumerate(corners_all):
                 poly_pts = tag_corners[0].astype(np.int32)
                 poly_pts.reshape((-1, 1, 2))
                 ypts = [x[1] for x in poly_pts]
@@ -145,7 +164,10 @@ with dai.Device(pipeline) as device:
 
                 # Draw the aruco tag border on the frame
                 frame = cv2.polylines(frame, [poly_pts], True, aruco_color, aruco_thickness)
+                frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec[i], tvec[i], 0.02)
 
+            
+            
             # Normalize detection coordinates to (0-1)
             imgDetection = dai.ImgDetection()
             imgDetection.xmin = xmin / inputFrameShape[0]
