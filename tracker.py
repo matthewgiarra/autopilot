@@ -4,21 +4,15 @@ import numpy as np
 import sys
 from pdb import set_trace
 
-# Bounding box
-class bbox():
-    def __init__(self):
-        self.xmin = 0
-        self.ymin = 0
-        self.xmax = 0
-        self.ymax = 0
-        self.label = 1
-        self.confidence = 0.5        
-
 # Which camera to use ("mono_left," "mono_right," or "color")
-camera_type = "color"
+camera_type = "mono_left"
 
 # For plotting
-color = (255, 0, 0)
+tracker_color = (0,255,255)
+tracker_thickness = 4
+
+aruco_color = (0,0,255)
+aruco_thickness = 8
 
 # Aruco stuff
 arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
@@ -51,6 +45,7 @@ else:
 # Image manipulator node for setting data type
 manip = pipeline.create(dai.node.ImageManip)
 manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
+manip.setMaxOutputFrameSize(3072000)
 
 # This node is used to send the image from device -> host
 xOutImage = pipeline.create(dai.node.XLinkOut)
@@ -70,8 +65,9 @@ objectTracker.inputTrackerFrame.setBlocking(True)
 objectTracker.inputDetectionFrame.setBlocking(True)
 objectTracker.inputDetections.setBlocking(True)
 objectTracker.setDetectionLabelsToTrack([1])
-objectTracker.setTrackerType(dai.TrackerType.ZERO_TERM_COLOR_HISTOGRAM)
+objectTracker.setTrackerType(dai.TrackerType.SHORT_TERM_IMAGELESS)
 objectTracker.setTrackerIdAssigmentPolicy(dai.TrackerIdAssigmentPolicy.SMALLEST_ID)
+objectTracker.setMaxObjectsToTrack(1)
 
 # Send the raw image to the image manipulator node to set the correct color format etc
 if isinstance(cam, dai.node.ColorCamera):
@@ -114,47 +110,47 @@ with dai.Device(pipeline) as device:
         # Image size. Can't we do this outside the loop? 
         inputFrameShape = frame.shape
 
+        # Putting these outside the loop
+        # lets us pass valid data to the detections queue
+        # even if there are no detections
+        decodedDetections = list()
+        imgDetections = dai.ImgDetections()
+
         # Detect the aruco markers
         (corners_all, ids, rejected) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=arucoParams)
-        
-        # Initialize imgDetections structure
-        imgDetections = dai.ImgDetections()
-        decodedDetections = list()
 
-        # Each aruco tag is a corner
-        for tag_corners in corners_all:
-            # Make an empty ImgDetection object
-            imgDetection = dai.ImgDetection()
+        if len(corners_all) > 0:
+            # Initialize min and max coordinates for 
+            # the bounding box around the entire cube
+            xmin = np.inf
+            xmax = 0
+            ymin = np.inf
+            ymax = 0
+            for tag_corners in corners_all:
+                poly_pts = tag_corners[0].astype(np.int32)
+                poly_pts.reshape((-1, 1, 2))
+                ypts = [x[1] for x in poly_pts]
+                xpts = [x[0] for x in poly_pts]
+                ymin = np.min([ymin, np.min(ypts)])
+                ymax = np.max([ymax, np.max(ypts)])
+                xmin = np.min([xmin, np.min(xpts)])
+                xmax = np.max([xmax, np.max(xpts)])
 
-            # Get the aruco corners
-            poly_pts = tag_corners[0].astype(np.int32)
-            poly_pts.reshape((-1, 1, 2))
-            ypts = [x[1] for x in poly_pts]
-            xpts = [x[0] for x in poly_pts]
-            ymin = np.min(ypts)
-            ymax = np.max(ypts)
-            xmin = np.min(xpts)
-            xmax = np.max(xpts)
-
-            # Draw the aruco tag border on the frame
-            frame = cv2.polylines(frame, [poly_pts], True, (0,0,255), 8)
+                # Draw the aruco tag border on the frame
+                frame = cv2.polylines(frame, [poly_pts], True, aruco_color, aruco_thickness)
 
             # Normalize detection coordinates to (0-1)
+            imgDetection = dai.ImgDetection()
             imgDetection.xmin = xmin / inputFrameShape[1]
             imgDetection.xmax = xmax / inputFrameShape[1]
             imgDetection.ymin = ymin / inputFrameShape[0]
             imgDetection.ymax = ymax / inputFrameShape[0]
+            imgDetection.confidence = 1.0 # Fake metadata
+            imgDetection.label = 1 # Fake metadata
 
-            # Faking metadata for now
-            imgDetection.confidence = 1.0
-            imgDetection.label = 1
-
-            # Add this detection to the list of detections
             decodedDetections.append(imgDetection)
-        
-        # Populate imgDetections 
-        imgDetections.detections = decodedDetections
-        
+            imgDetections.detections = decodedDetections
+
         # Send the aruco detections to the detections queue (host -> device)
         qDetectionsIn.send(imgDetections)
 
@@ -169,10 +165,10 @@ with dai.Device(pipeline) as device:
             y2 = int(roi.bottomRight().y)
             label = t.label
 
-            cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            cv2.putText(frame, f"ID: {[t.id]}", (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            cv2.putText(frame, t.status.name, (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+            # cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            # cv2.putText(frame, f"ID: {[t.id]}", (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            cv2.putText(frame, t.status.name, (x1, y2 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, tracker_color)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), tracker_color, tracker_thickness, cv2.FONT_HERSHEY_SIMPLEX)
 
         # Display the image
         cv2.imshow("Image", frame)
