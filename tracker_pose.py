@@ -5,7 +5,10 @@ import sys
 from pdb import set_trace
 
 # Output video path
-out_video_path = None
+out_video_path = "out_pose.avi"
+
+# Draw tracking? 
+draw_tracking = True
 
 # Which camera to use ("mono_left," "mono_right," or "color")
 camera_type = "mono_right"
@@ -194,9 +197,10 @@ with dai.Device(pipeline) as device:
             x2 = int(roi.bottomRight().x)
             y2 = int(roi.bottomRight().y)
 
-            # Draw the tracking info on the frame
-            cv2.putText(frame, t.status.name, (x1, y2 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, tracker_color)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), tracker_color, tracker_thickness, cv2.FONT_HERSHEY_SIMPLEX)
+            if draw_tracking is True:
+                # Draw the tracking info on the frame
+                cv2.putText(frame, t.status.name, (x1, y2 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, tracker_color)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), tracker_color, tracker_thickness, cv2.FONT_HERSHEY_SIMPLEX)
 
         # Display the image
         if outVideo is not None:
