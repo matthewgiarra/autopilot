@@ -8,17 +8,16 @@ from pdb import set_trace
 camera_type = "mono_left"
 
 # For plotting
-tracker_color = (0,255,255)
-tracker_thickness = 4
-
-aruco_color = (0,0,255)
-aruco_thickness = 8
+tracker_color = (0,255,255) # Line / text color
+tracker_thickness = 4 # Line thickness
+aruco_color = (0,0,255) # Line / text color
+aruco_thickness = 8 # Line thickness
 
 # Aruco stuff
 arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
 arucoParams = cv2.aruco.DetectorParameters_create()
 
-# DepthAI stuff
+# DepthAI Pipeline
 pipeline = dai.Pipeline()
 
 # Set up the camera
@@ -148,6 +147,7 @@ with dai.Device(pipeline) as device:
             imgDetection.confidence = 1.0 # Fake metadata
             imgDetection.label = 1 # Fake metadata
 
+            # Append detection to list
             decodedDetections.append(imgDetection)
             imgDetections.detections = decodedDetections
 
@@ -163,10 +163,8 @@ with dai.Device(pipeline) as device:
             y1 = int(roi.topLeft().y)
             x2 = int(roi.bottomRight().x)
             y2 = int(roi.bottomRight().y)
-            label = t.label
 
-            # cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-            # cv2.putText(frame, f"ID: {[t.id]}", (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+            # Draw the tracking info on the frame
             cv2.putText(frame, t.status.name, (x1, y2 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, tracker_color)
             cv2.rectangle(frame, (x1, y1), (x2, y2), tracker_color, tracker_thickness, cv2.FONT_HERSHEY_SIMPLEX)
 
