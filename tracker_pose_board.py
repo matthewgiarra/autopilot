@@ -4,6 +4,31 @@ import numpy as np
 import sys
 from pdb import set_trace
 
+def create_aruco_cube(cube_width_m = 0.0508, tag_width_m = 0.040, board_ids = [0,1,2,3,4,5], aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)):
+    # Create an "aruco cube" using the aruco board class
+    # Order of tags in board_id should be: [front, right, back, left, top, bottom]
+    # These face names are specified as though you are looking at the front side.
+    # Axes: With the "front" side facing you,
+    #   +x points right
+    #   +y points up
+    #   +z points at you
+    # Tag corners: If you rotate the cube to view a different face using 
+    # only one rotation, the tag corners sould be:
+    #   [0 1 2 3] = [top left, top right, bottom right, bottom left]
+    
+    c = cube_width_m
+    t = tag_width_m
+    board_corners = [
+        np.array([ [-t/2, t/2, c/2],  [t/2, t/2, c/2],  [t/2, -t/2, c/2],  [-t/2, -t/2, c/2]],  dtype=np.float32),
+        np.array([ [c/2, t/2, t/2],   [c/2, t/2, -t/2], [c/2, -t/2, -t/2], [c/2, -t/2, t/2] ],  dtype=np.float32),
+        np.array([ [t/2, t/2, -c/2],  [-t/2, t/2, -c/2],[-t/2, -t/2, -c/2],[t/2, -t/2, -c/2]],  dtype=np.float32),
+        np.array([ [-c/2, t/2, -t/2], [-c/2, t/2, t/2], [-c/2, -t/2, t/2], [-c/2, -t/2, -t/2]], dtype=np.float32),
+        np.array([ [-t/2, c/2, -t/2], [t/2, c/2, -t/2], [t/2, c/2, t/2],   [-t/2, c/2, t/2]],   dtype=np.float32),
+        np.array([ [-t/2, -c/2, t/2], [t/2, -c/2, t/2], [t/2, -c/2, -t/2], [-t/2, -c/2, -t/2]], dtype=np.float32)
+    ]
+    board = cv2.aruco.Board_create(board_corners, arucoDict, board_ids)
+    return board
+
 # Output video path
 out_video_path = None
 
@@ -11,13 +36,13 @@ out_video_path = None
 draw_tracking = False
 
 # Draw corner numbers?
-draw_corner_nums = False
+draw_corner_nums = True
 
 # Draw edges of each tag?
 draw_aruco_edges = False
 
 # Draw the ID of each tag?
-draw_aruco_ids = False
+draw_aruco_ids = True
 
 # Draw the cube pose?
 draw_aruco_axes = True
@@ -38,29 +63,22 @@ arucoParams = cv2.aruco.DetectorParameters_create()
 # Aruco tag size in meters
 # Small cube uses 40 mm tags
 # Big cube uses 80 mm tags
-aruco_tag_size_meters = 0.080
+aruco_tag_size_meters = 0.080 # 4 inch cube
+# aruco_tag_size_meters = 0.040 # 2 inch cube
 
 # Length of each side of the aruco cube in meters.
 # 2 inch = 0.0508 mm 
 # 4 inch = 0.1016 mm
-aruco_cube_size_meters = 0.1016
-
-# Define the aruco board
-# Shorten some variables for brevity
-c = aruco_cube_size_meters
-t = aruco_tag_size_meters
+aruco_cube_size_meters = 0.1016 # 4 inch cube
+# aruco_cube_size_meters = 0.0508 # 2 inch cube
 
 # Create aruco board object (for the 4" cube)
-board_ids = np.array([5, 6, 7, 8, 9, 10])
-board_corners = [
-    np.array([ [-t/2, t/2, c/2],  [t/2, t/2, c/2],  [t/2, -t/2, c/2],  [-t/2, -t/2, c/2]],  dtype=np.float32),
-    np.array([ [c/2, t/2, t/2],   [c/2, t/2, -t/2], [c/2, -t/2, -t/2], [c/2, -t/2, t/2] ],  dtype=np.float32),
-    np.array([ [t/2, t/2, -c/2],  [-t/2, t/2, -c/2],[-t/2, -t/2, -c/2],[t/2, -t/2, -c/2]],  dtype=np.float32),
-    np.array([ [-c/2, t/2, -t/2], [-c/2, t/2, t/2], [-c/2, -t/2, t/2], [-c/2, -t/2, -t/2]], dtype=np.float32),
-    np.array([ [-t/2, c/2, -t/2], [t/2, c/2, -t/2], [t/2, c/2, t/2],   [-t/2, c/2, t/2]],   dtype=np.float32),
-    np.array([ [-t/2, -c/2, t/2], [t/2, -c/2, t/2], [t/2, -c/2, -t/2], [-t/2, -c/2, -t/2]], dtype=np.float32)
-]
-board = cv2.aruco.Board_create(board_corners, arucoDict, board_ids)
+# Order of tags in board_id should be: [front, right, back, left, top, bottom]
+board_ids = np.array([5, 6, 7, 8, 9, 10]) # 4 inch cube
+# board_ids = np.array([0, 1, 2, 3, 5, 4]) # 2 inch cube. There is actually no tag 5; need it to specify cube 
+
+# Make the aruco cube
+board = create_aruco_cube(cube_width_m = aruco_cube_size_meters, tag_width_m = aruco_tag_size_meters, board_ids = board_ids, aruco_dict = arucoDict)
 
 # DepthAI Pipeline
 pipeline = dai.Pipeline()
@@ -191,6 +209,9 @@ with dai.Device(pipeline) as device:
                 # Estimate the pose of the whole cube
                 [ret, rvec, tvec] = cv2.aruco.estimatePoseBoard(corners_all, ids, board, camera_matrix, camera_distortion, np.zeros([1,1,3]), np.zeros([1,1,3]))
                 frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec, tvec, aruco_tag_size_meters / 2)
+                print("rvec = " + str(np.squeeze(rvec)))
+                print("tvec = " + str(np.squeeze(tvec)))
+                print("")
 
             # Draw IDs?
             if draw_aruco_ids is True:
