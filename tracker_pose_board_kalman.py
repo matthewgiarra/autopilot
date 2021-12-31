@@ -2,10 +2,82 @@ import depthai as dai
 import cv2
 import numpy as np
 import sys
+import time
 from pdb import set_trace
 
 np.set_printoptions(precision=2)
 np.set_printoptions(floatmode = "fixed")
+
+class KalmanFilterAttitude(cv2.KalmanFilter):
+    # KalmanFilterPose extends cv2.KalmanFilter
+    # by accounting for discontinuity in angles
+    # i.e. for attitude
+
+    # TODO: Make a different class called KalmanFilterAttitude 
+    # that extends cv2.KalmanFilter that operates on attitude data alone
+    # or have KalmanFilterPose class accept an input for which indicies
+    # are the angle observations
+    
+    def correct(self, measurement):
+        
+        # Make sure the measurement is an n x 1 array
+        ndims = len(measurement.shape)
+        if ndims < 2:
+            measurement = np.expand_dims(measurement, axis=1)
+
+        # Measurement matrix
+        Hk = self.measurementMatrix
+
+        # Measurement noise covariance
+        Rk = self.measurementNoiseCov
+
+        # Transpose of measurement matrix
+        HkT = np.transpose(Hk)
+
+        # Pre-fit error covariance
+        Pk_km1 = self.errorCovPre
+
+        # Predicted state
+        xk_km1 = self.statePre
+
+        # Predicted measurement
+        yk = measurement - np.matmul(Hk, xk_km1)
+
+        # Length of the difference between 
+        # measured and predicted Rodrigues vectors
+        # Here we're assuming that a difference
+        # greater than pi probably means 
+        # the rotation axis flipped between observations,
+        # i.e., the rotation angle wrapped around 
+        if np.linalg.norm(yk) > np.pi:
+
+            # Flip sign of state prediction to
+            # make it consistent with the measurement
+            xk_km1 = -1 * xk_km1
+
+            # Recalculate measurement residual
+            yk = measurement - np.matmul(Hk, xk_km1)
+
+        # Pre-fit residual covariance
+        Sk = np.matmul(H, np.matmul(Pk_km1, HkT)) + Rk
+
+        # Inverse
+        SkInv = np.linalg.inv(Sk)
+        
+        # Optimal Kalman gain
+        Kk = np.matmul(Pk_km1, np.matmul(HkT, SkInv))
+
+        # Updated state estimate
+        xk_k = xk_km1 + np.matmul(Kk, yk)
+
+        # Update error covariance
+        I = np.eye(Pk_km1.shape[0])
+        Pk_k = np.matmul((I - np.matmul(Kk, Hk)), Pk_km1)
+
+        # Update the object's parameters
+        self.statePost = xk_k
+        self.errorCovPost = Pk_k
+        self.gain = Kk
 
 class KalmanFilterPose(cv2.KalmanFilter):
     # KalmanFilterPose extends cv2.KalmanFilter
@@ -43,7 +115,7 @@ class KalmanFilterPose(cv2.KalmanFilter):
         meas_pre = np.matmul(Hk, xk_km1)
 
         # Rotation
-        rvec_pre = meas_pre[3:6]
+        rvec_pred = meas_pre[3:6]
         rvec_meas = measurement[3:6]
         
         # Length of the difference between 
@@ -52,7 +124,7 @@ class KalmanFilterPose(cv2.KalmanFilter):
         # greater than pi probably means 
         # the rotation axis flipped between observations,
         # i.e., the rotation angle wrapped around 
-        norm_d = np.linalg.norm(rvec_meas - rvec_pre)
+        norm_d = np.linalg.norm(rvec_meas - rvec_pred)
         if norm_d > np.pi:
             xk_km1[3:6] = -1 * xk_km1[3:6]
             xk_km1[9:]  = -1 * xk_km1[9:]
@@ -106,11 +178,42 @@ def create_aruco_cube(cube_width_m = 0.0508, tag_width_m = 0.040, board_ids = [0
     board = cv2.aruco.Board_create(board_corners, arucoDict, board_ids)
     return board
 
+def estimatePoseBoardAndValidate(detectedCorners, detectedIds, board, camera_matrix, camera_distortion, rvec = np.zeros(3), tvec = np.zeros(3)):
+    # Assumes that a pose estimate is bad when its Z coordinate is negative,
+    # then drops out tags one at a time to re-estimate the pose. 
+
+    # Estimate the pose with all the detected corners
+    [ret, rvec, tvec] = cv2.aruco.estimatePoseBoard(detectedCorners, detectedIds, 
+                        board, camera_matrix, camera_distortion, rvec, tvec)
+    valid = True
+
+    # If the board position was estimated with negative Z coordinate, presume it failed.
+    # Drop out markers one at a time until we get a reasonable measurement.
+    if tvec[-1] < 0: # tvec[-1] is the estimated Z coordinate
+        ret = 0
+        valid = False
+        idxes = np.arange(len(detectedCorners))
+        for drop_idx in idxes:
+            detectedCorners_sub = tuple([detectedCorners[i] for i in idxes if i != drop_idx])
+            detectedIds_sub = np.array([detectedIds[i] for i in idxes if i != drop_idx])
+            [ret_test, rvec_test, tvec_test] = cv2.aruco.estimatePoseBoard(detectedCorners_sub, detectedIds_sub, 
+                board, camera_matrix, camera_distortion, np.zeros(3), np.zeros(3))
+            if tvec_test[-1] > 0:
+                rvec = rvec_test
+                tvec = tvec_test
+                ret = ret_test
+                valid = True
+                break
+
+    # If the z coordinate is still negative, 
+    # return the results but 
+    return(ret, rvec, tvec, valid)
+
 # Output video path
 out_video_path = None
 
 # Draw tracking? 
-draw_tracking = False
+draw_tracking = True
 
 # Draw corner numbers?
 draw_corner_nums = False
@@ -119,13 +222,13 @@ draw_corner_nums = False
 draw_aruco_edges = True
 
 # Draw the ID of each tag?
-draw_aruco_ids = True
+draw_aruco_ids = False
 
 # Draw the cube pose?
 draw_aruco_axes = True
 
 # Which camera to use ("mono_left," "mono_right," or "color")
-camera_type = "mono_left"
+camera_type = "mono_right"
 
 # For plotting
 tracker_color = (0,255,255) # Line / text color
@@ -164,16 +267,17 @@ pipeline = dai.Pipeline()
 # Set up the camera
 if camera_type == "color":
     cam = pipeline.create(dai.node.ColorCamera)
-    cam.setPreviewSize(640, 400)
+
+    cam.setBoardSocket(dai.CameraBoardSocket.RGB)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-    cam.setInterleaved(False)
+    cam.setVideoSize(1920, 1080)
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(40)
-    inputFrameShape = cam.getPreviewSize()
+    inputFrameShape = cam.getVideoSize()
     cameraBoardSocket = dai.CameraBoardSocket.RGB
 else: 
     cam = pipeline.create(dai.node.MonoCamera)
-    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
     cam.setFps(120)
     inputFrameShape = cam.getResolutionSize()
     if camera_type == "mono_left":
@@ -189,26 +293,20 @@ else:
     # Did it this way because I refer to cameraBoardSocket later.
     cam.setBoardSocket(cameraBoardSocket)
     
-# Image manipulator node for setting data type
-manip = pipeline.create(dai.node.ImageManip)
-manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
-manip.setMaxOutputFrameSize(3072000)
-
 # This node is used to send the image from device -> host
 xOutImage = pipeline.create(dai.node.XLinkOut)
 xOutImage.setStreamName("imageOut")
+xOutImage.input.setBlocking(False)
+xOutImage.input.setQueueSize(1)
 
-# Send the raw image to the image manipulator node to set the correct color format etc
+# Send the images to the output queues
 if isinstance(cam, dai.node.ColorCamera):
-    cam.preview.link(manip.inputImage)
+    cam.video.link(xOutImage.input)
 elif isinstance(cam, dai.node.MonoCamera):
-    cam.out.link(manip.inputImage)
+    cam.out.link(xOutImage.input)
 else:
     print("Unknown camera node type; exiting")
     sys.exit()
-
-# Link image manipulator output to xLinkOutput's input (device -> host)
-manip.out.link(xOutImage.input)
 
 # Open a video writer object
 if out_video_path is not None:
@@ -244,6 +342,9 @@ F = np.array(
     ]
 , dtype=np.float64)
 
+# Indices of state transition matrix containing dt
+dt_idx = np.where(F == dt)
+
 # Observation matrix
 H = np.array(
     [
@@ -256,7 +357,7 @@ H = np.array(
     ], dtype = np.float64)
 
 # Covariance of process noise
-Q = 1E-2 * np.eye(dim_state, dtype=np.float64)
+Q = 5E-3 * np.eye(dim_state, dtype=np.float64)
 
 # Covariance of measurement noise
 R = 1E-2 * np.eye(dim_meas, dtype=np.float64)
@@ -288,7 +389,14 @@ with dai.Device(pipeline) as device:
     camera_distortion = np.array(calibData.getDistortionCoefficients(cameraBoardSocket))[:-2]
 
     # Listen for data on the device xLinkOut queue
-    qImageOut = device.getOutputQueue(name="imageOut", maxSize=4, blocking=False)
+    qImageOut = device.getOutputQueue(name="imageOut", maxSize=1, blocking=False)
+
+    startTime = time.monotonic()
+    prev_frame_time = 0
+    new_frame_time = 0
+    rmat_kalman_prev = np.eye(3)
+    rvec_kalman = np.zeros(3)
+    debug = False
 
     # Main processing loop
     while True:
@@ -296,9 +404,23 @@ with dai.Device(pipeline) as device:
         if imgRaw is None: 
             print("Empty image...")
             continue
+
+        # Update the state transition matrix
+        F[dt_idx] = dt
+        kf.transitionMatrix = F
+
+        # Calculate frames per second
+        new_frame_time = time.time()
+        dt = new_frame_time - prev_frame_time
+        fps =  1 / dt
         
+        # Update previous time for next loop
+        prev_frame_time = new_frame_time
+
         # Get the image
         frame = imgRaw.getCvFrame()
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
         # Detect the aruco markers
         (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=arucoParams)
@@ -308,15 +430,20 @@ with dai.Device(pipeline) as device:
             detectedCorners, detectedIds, rejectedCorners, 
             cameraMatrix = camera_matrix, distCoeffs = camera_distortion, parameters=arucoParams)
 
-        # Calculates kf.statePre (xk_km1)
-        kf.predict() 
+        # Predict state (calculate xk_km1)
+        kf.predict()
+        tvec = np.array([0,0,0])
 
         if len(detectedCorners) > 0:
-            [ret, rvec, tvec] = cv2.aruco.estimatePoseBoard(detectedCorners, detectedIds, board, camera_matrix, camera_distortion, np.zeros(3), np.zeros(3))
-            rot_theta = np.linalg.norm(rvec)
-            rot_axis = rvec / rot_theta
+            [ret, rvec, tvec, valid] = estimatePoseBoardAndValidate(detectedCorners, detectedIds, board, camera_matrix, camera_distortion, np.zeros(3), np.zeros(3))
+            
             measurement = np.concatenate([tvec, rvec], axis=0).astype(np.float64)
-            kf.correct(measurement)
+            print(measurement)
+
+            # Correct state prediction (calculate xk_k)
+            # Only do this if the measurement is "good," i.e. z coordinate > 0
+            if valid is True:
+                kf.correct(measurement)
 
             # Draw IDs?
             if draw_aruco_ids is True:
@@ -355,13 +482,21 @@ with dai.Device(pipeline) as device:
         tvec_kalman = kf.statePost[0:3]
         rvec_kalman = kf.statePost[3:6]
 
-        # Copy the frame 
+        rmat_kalman, _ = cv2.Rodrigues(rvec_kalman)
+        residual_mat = np.matmul(np.transpose(rmat_kalman), rmat_kalman_prev)
+        residual_vec, _ = cv2.Rodrigues(residual_mat)
+        rnorm_kalman = np.linalg.norm(residual_vec) 
+        
+        # Draw FPS on frame
+        cv2.putText(frame, "FPS: {:.2f}".format(fps),
+                        (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255,255,255))
+
+        # Copy the frame (we'll use the copied frame to visualize the Kalman-estimated board state)
         frame_kalman = frame.copy()
 
         # Draw the axes
         if draw_aruco_axes is True:
             frame_kalman = cv2.aruco.drawAxis(frame_kalman, camera_matrix, camera_distortion, rvec_kalman, tvec_kalman, aruco_tag_size_meters / 2)
-
             if len(detectedCorners) > 0:
                 frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec, tvec, aruco_tag_size_meters / 2)
 
@@ -370,9 +505,27 @@ with dai.Device(pipeline) as device:
             outVideo.write(frame)
         cv2.imshow("Image", frame)
         cv2.imshow("Kalman", frame_kalman)
+        
         key=cv2.waitKey(10)
         if key == ord('q'):
             break
+        elif key == ord(' '):
+            debug = not debug
+            if debug is True:
+                print("Debugging ON")
+            else:
+                print("Debugging OFF")
+
+        # Update previous rotation matrix
+        rmat_kalman_prev = rmat_kalman
+        rvec_kalman_prev = rvec_kalman
+
+        if (tvec[-1] < 0) and (debug is True):
+            print("Warning: tvec[-1] < 0")
+            set_trace()
+        if (rnorm_kalman > 2) and (debug is True):
+            print("Warning: norm(rvec_kalman) > threshold")
+            set_trace()
 
 if outVideo is not None:
     outVideo.release()
