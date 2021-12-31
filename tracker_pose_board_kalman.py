@@ -110,13 +110,13 @@ def create_aruco_cube(cube_width_m = 0.0508, tag_width_m = 0.040, board_ids = [0
 out_video_path = None
 
 # Draw tracking? 
-draw_tracking = True
+draw_tracking = False
 
 # Draw corner numbers?
 draw_corner_nums = False
 
 # Draw edges of each tag?
-draw_aruco_edges = False
+draw_aruco_edges = True
 
 # Draw the ID of each tag?
 draw_aruco_ids = True
@@ -130,8 +130,8 @@ camera_type = "mono_left"
 # For plotting
 tracker_color = (0,255,255) # Line / text color
 tracker_thickness = 4 # Line thickness
-aruco_color = (0,0,255) # Line / text color
-aruco_thickness = 4 # Line thickness
+aruco_edge_color = (0,0,255) # Line / text color
+aruco_edge_thickness = 4 # Line thickness
 
 # Aruco stuff
 arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
@@ -301,13 +301,18 @@ with dai.Device(pipeline) as device:
         frame = imgRaw.getCvFrame()
 
         # Detect the aruco markers
-        (corners_all, ids, rejected) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=arucoParams)
+        (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=arucoParams)
+
+        # Refine the detection
+        detectedCorners, detectedIds, rejectedCorners, recoveredIdxs = cv2.aruco.refineDetectedMarkers(frame, board, 
+            detectedCorners, detectedIds, rejectedCorners, 
+            cameraMatrix = camera_matrix, distCoeffs = camera_distortion, parameters=arucoParams)
 
         # Calculates kf.statePre (xk_km1)
         kf.predict() 
 
-        if len(corners_all) > 0:
-            [ret, rvec, tvec] = cv2.aruco.estimatePoseBoard(corners_all, ids, board, camera_matrix, camera_distortion, np.zeros(3), np.zeros(3))
+        if len(detectedCorners) > 0:
+            [ret, rvec, tvec] = cv2.aruco.estimatePoseBoard(detectedCorners, detectedIds, board, camera_matrix, camera_distortion, np.zeros(3), np.zeros(3))
             rot_theta = np.linalg.norm(rvec)
             rot_axis = rvec / rot_theta
             measurement = np.concatenate([tvec, rvec], axis=0).astype(np.float64)
@@ -315,7 +320,7 @@ with dai.Device(pipeline) as device:
 
             # Draw IDs?
             if draw_aruco_ids is True:
-                frame = cv2.aruco.drawDetectedMarkers(frame, corners_all, ids)
+                frame = cv2.aruco.drawDetectedMarkers(frame, detectedCorners, detectedIds)
 
             # Initialize min and max coordinates for 
             # the bounding box around the entire cube
@@ -323,7 +328,7 @@ with dai.Device(pipeline) as device:
             xmax = 0
             ymin = np.inf
             ymax = 0
-            for i, tag_corners in enumerate(corners_all):
+            for i, tag_corners in enumerate(detectedCorners):
                 poly_pts = tag_corners[0].astype(np.int32)
                 poly_pts.reshape((-1, 1, 2))
                 ypts = [x[1] for x in poly_pts]
@@ -332,23 +337,20 @@ with dai.Device(pipeline) as device:
                 ymax = np.max([ymax, np.max(ypts)])
                 xmin = np.min([xmin, np.min(xpts)])
                 xmax = np.max([xmax, np.max(xpts)])
-            xmin = int(xmin)
-            ymin = int(ymin)
-            xmax = int(xmax)
-            ymax = int(ymax)
+
+                # Draw the aruco tag border on the frame
+                if draw_aruco_edges is True:
+                    frame = cv2.polylines(frame, [poly_pts], True, aruco_edge_color, aruco_edge_thickness)
+                # Draw corner numbers
+                if draw_corner_nums is True:
+                    for j, corner in enumerate(tag_corners[0]):
+                        cv2.putText(frame, str(j), (int(corner[0]), int(corner[1])), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (255,0,0))
 
             # Draw the tracking info on the frame
             if draw_tracking is True:
-                cv2.putText(frame, 'tracking', (xmin, ymin + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, tracker_color)
-                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), tracker_color, tracker_thickness, cv2.FONT_HERSHEY_SIMPLEX)
-            # Draw the aruco tag border on the frame
-            if draw_aruco_edges is True:
-                frame = cv2.polylines(frame, [poly_pts], True, aruco_color, aruco_thickness)
-            # Draw corner numbers
-            if draw_corner_nums is True:
-                for j, corner in enumerate(tag_corners[0]):
-                    cv2.putText(frame, str(j), (int(corner[0]), int(corner[1])), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (255,0,0))
-        
+                cv2.putText(frame, 'tracking', (int(xmin), int(ymin) + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, tracker_color)
+                cv2.rectangle(frame, (int(xmin), int(ymin)), (int(xmax), int(ymax)), tracker_color, tracker_thickness, cv2.FONT_HERSHEY_SIMPLEX)
+            
         # Update the state of the cube
         tvec_kalman = kf.statePost[0:3]
         rvec_kalman = kf.statePost[3:6]
@@ -360,7 +362,7 @@ with dai.Device(pipeline) as device:
         if draw_aruco_axes is True:
             frame_kalman = cv2.aruco.drawAxis(frame_kalman, camera_matrix, camera_distortion, rvec_kalman, tvec_kalman, aruco_tag_size_meters / 2)
 
-            if len(corners_all) > 0:
+            if len(detectedCorners) > 0:
                 frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec, tvec, aruco_tag_size_meters / 2)
 
         # Display the image
