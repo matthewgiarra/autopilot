@@ -106,7 +106,6 @@ def create_aruco_cube(cube_width_m = 0.0508, tag_width_m = 0.040, board_ids = [0
     board = cv2.aruco.Board_create(board_corners, arucoDict, board_ids)
     return board
 
-
 # Output video path
 out_video_path = None
 
@@ -199,24 +198,6 @@ manip.setMaxOutputFrameSize(3072000)
 xOutImage = pipeline.create(dai.node.XLinkOut)
 xOutImage.setStreamName("imageOut")
 
-# This node is used to pass the aruco bounding bbox coordinates from host -> device
-xinDetections = pipeline.create(dai.node.XLinkIn)
-xinDetections.setStreamName("inDetections")
-
-# This node is used to send the tracks from device -> host
-xOutTracks = pipeline.create(dai.node.XLinkOut)
-xOutTracks.setStreamName("trackletsOut")
-
-# This node is the object tracker (device)
-objectTracker = pipeline.create(dai.node.ObjectTracker)
-objectTracker.inputTrackerFrame.setBlocking(True)
-objectTracker.inputDetectionFrame.setBlocking(True)
-objectTracker.inputDetections.setBlocking(True)
-objectTracker.setDetectionLabelsToTrack([1])
-objectTracker.setTrackerType(dai.TrackerType.SHORT_TERM_IMAGELESS)
-objectTracker.setTrackerIdAssigmentPolicy(dai.TrackerIdAssigmentPolicy.SMALLEST_ID)
-objectTracker.setMaxObjectsToTrack(1)
-
 # Send the raw image to the image manipulator node to set the correct color format etc
 if isinstance(cam, dai.node.ColorCamera):
     cam.preview.link(manip.inputImage)
@@ -226,25 +207,14 @@ else:
     print("Unknown camera node type; exiting")
     sys.exit()
 
-# Link image manipulator output to object tracker input
-manip.out.link(objectTracker.inputTrackerFrame)
-manip.out.link(objectTracker.inputDetectionFrame)
-
 # Link image manipulator output to xLinkOutput's input (device -> host)
 manip.out.link(xOutImage.input)
-
-# Link detections (computed on host) to object tracker on the device
-xinDetections.out.link(objectTracker.inputDetections)
-
-# Link tracks (computed on device) to host (device -> host)
-objectTracker.out.link(xOutTracks.input)
 
 # Open a video writer object
 if out_video_path is not None:
     outVideo = cv2.VideoWriter(out_video_path, cv2.VideoWriter_fourcc('M','J','P','G'), 30, inputFrameShape)
 else:
     outVideo = None
-
 
 # # # # # Kalman Filter set up # # # # # #
 
@@ -290,7 +260,6 @@ Q = 1E-2 * np.eye(dim_state, dtype=np.float64)
 
 # Covariance of measurement noise
 R = 1E-2 * np.eye(dim_meas, dtype=np.float64)
-# R[3,3] = R[4,4] = R[5,5] = 1E-4
 
 # kf.statePre: xk_km1
 # kf.errorCovPre: Pk_km1
@@ -318,10 +287,8 @@ with dai.Device(pipeline) as device:
     # vector of distortion coefficients (k1,k2,p1,p2,k3,k4,k5,k6,s1,s2,s3,s4)
     camera_distortion = np.array(calibData.getDistortionCoefficients(cameraBoardSocket))[:-2]
 
-    # Listen for data on the device xLinkIn / xLinkOut queues
+    # Listen for data on the device xLinkOut queue
     qImageOut = device.getOutputQueue(name="imageOut", maxSize=4, blocking=False)
-    qDetectionsIn = device.getInputQueue(name="inDetections", maxSize=4, blocking=False)
-    qTracklets = device.getOutputQueue(name="trackletsOut", maxSize=4, blocking=False)
 
     # Main processing loop
     while True:
@@ -332,12 +299,6 @@ with dai.Device(pipeline) as device:
         
         # Get the image
         frame = imgRaw.getCvFrame()
-        
-        # Putting these outside the loop
-        # lets us pass valid data to the detections queue
-        # even if there are no detections
-        decodedDetections = list()
-        imgDetections = dai.ImgDetections()
 
         # Detect the aruco markers
         (corners_all, ids, rejected) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=arucoParams)
@@ -379,7 +340,7 @@ with dai.Device(pipeline) as device:
             # Draw the tracking info on the frame
             if draw_tracking is True:
                 cv2.putText(frame, 'tracking', (xmin, ymin + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, tracker_color)
-
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), tracker_color, tracker_thickness, cv2.FONT_HERSHEY_SIMPLEX)
             # Draw the aruco tag border on the frame
             if draw_aruco_edges is True:
                 frame = cv2.polylines(frame, [poly_pts], True, aruco_color, aruco_thickness)
@@ -388,37 +349,11 @@ with dai.Device(pipeline) as device:
                 for j, corner in enumerate(tag_corners[0]):
                     cv2.putText(frame, str(j), (int(corner[0]), int(corner[1])), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (255,0,0))
         
-            # Normalize detection coordinates to (0-1)
-            imgDetection = dai.ImgDetection()
-            imgDetection.xmin = xmin / inputFrameShape[0]
-            imgDetection.xmax = xmax / inputFrameShape[0]
-            imgDetection.ymin = ymin / inputFrameShape[1]
-            imgDetection.ymax = ymax / inputFrameShape[1]
-            imgDetection.confidence = 1.0 # Fake metadata
-            imgDetection.label = 1 # Fake metadata
-
-            # Append detection to list
-            decodedDetections.append(imgDetection)
-            imgDetections.detections = decodedDetections
-
         # Update the state of the cube
         tvec_kalman = kf.statePost[0:3]
         rvec_kalman = kf.statePost[3:6]
-      
-        # Send the aruco detections to the detections queue (host -> device)
-        qDetectionsIn.send(imgDetections)
 
-        # Read and plot the tracker output
-        track = qTracklets.get()
-        trackletsData = track.tracklets
-        for t in trackletsData:
-            roi = t.roi.denormalize(frame.shape[1], frame.shape[0])
-            x1 = int(roi.topLeft().x)
-            y1 = int(roi.topLeft().y)
-            x2 = int(roi.bottomRight().x)
-            y2 = int(roi.bottomRight().y)
-
-          # Copy the frame 
+        # Copy the frame 
         frame_kalman = frame.copy()
 
         # Draw the axes
