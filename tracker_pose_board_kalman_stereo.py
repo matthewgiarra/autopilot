@@ -89,7 +89,7 @@ for i in range(num_cams):
     xOutImage.setStreamName("imageOut" + str(i))
 
     cam = pipeline.create(dai.node.MonoCamera)
-    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     cam.setFps(cam_fps)
     cam.setBoardSocket(cameraBoardSockets[i])
     cam.out.link(xOutImage.input)
@@ -212,85 +212,75 @@ with dai.Device(pipeline) as device:
         prev_frame_time = new_frame_time
 
         frames = []
+        measurements = []
         detectedCornersAllCams = []
         detectedIdsAllCams = []
+        validAllCams = []
+
+        # Get all the frames before we do any processing so that they're closely spaced in time
         for i, queue in enumerate(image_out_queues):
-            imgRaw = queue.get()
-            frame = imgRaw.getCvFrame()
-
-            # Detect corners and refine detections
-            (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=arucoParams)
-            detectedCorners, detectedIds, rejectedCorners, recoveredIdxs = cv2.aruco.refineDetectedMarkers(frame, board, 
-                detectedCorners, detectedIds, rejectedCorners, 
-                cameraMatrix = camera_matrices[i], distCoeffs = camera_distortions[i], parameters=arucoParams)
-            
-            # Append items to lists
+            frame = queue.get().getCvFrame()
             frames.append(frame)
-            detectedCornersAllCams.append(detectedCorners)
-            detectedIdsAllCams.append(detectedIds)
 
-        # Initialize translation vector
-        tvec = np.array([0,0,0])
+        # Process each frame
+        for i, frame in enumerate(frames):
 
-        ############# Temporarily grab parameters
-        detectedCorners = detectedCornersAllCams[0]
-        detectedIds = detectedIdsAllCams[0]
-        camera_matrix = camera_matrices[0]
-        camera_distortion = camera_distortions[0]
-        frame = frames[0]
+            cameraMatrix = camera_matrices[i]
+            distCoeffs    = camera_distortions[i]
 
-        # Make sure it's color
-        if len(frame.shape) == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-
-        # Estimate the board pose if any tags were detected
-        if len(detectedCorners) > 0:
-            [ret, rvec, tvec, valid] = aruco.estimatePoseBoardAndValidate(detectedCorners, detectedIds, board, camera_matrix, camera_distortion, np.zeros(3), np.zeros(3))
-            measurement = np.concatenate([tvec, rvec], axis=0).astype(np.float64)
+            valid, measurement, detectedCorners, detectedIds = aruco.getPoseMeasurement(frame, board, 
+            cameraMatrix=cameraMatrix, distCoeffs = distCoeffs, arucoDict = arucoDict, parameters=arucoParams)
 
             # Correct state prediction (calculate xk_k)
             # Only do this if the measurement is "good," i.e. z coordinate > 0
-            if valid is True:
+            if valid is True and i == 0:
                 kf.correct(measurement)
 
-            # Draw IDs?
-            if draw_aruco_ids is True:
-                frame = drawing.draw_ids(frame, detectedCorners, detectedIds)
-           
-            if draw_aruco_edges is True:
-                frame = drawing.draw_edges(frame, detectedCorners)
+            # Append the measurement to the list of measurements
+            measurements.append(measurement)
+            validAllCams.append(valid)
+            detectedCornersAllCams.append(detectedCorners)
+            detectedIdsAllCams.append(detectedIds)
 
-            if draw_corner_nums is True:
-                frame = drawing.draw_corners(frame, detectedCorners)
-
-            if draw_tracking_status is True:
-                frame = drawing.draw_tracking(frame, detectedCorners)
-
-        # Update the state of the cube
-        tvec_kalman = kf.statePost[0:3]
-        rvec_kalman = kf.statePost[3:6]
-        
-        rmat_kalman, _ = cv2.Rodrigues(rvec_kalman)
-        residual_mat = np.matmul(np.transpose(rmat_kalman), rmat_kalman_prev)
-        residual_vec, _ = cv2.Rodrigues(residual_mat)
-        rnorm_kalman = np.linalg.norm(residual_vec) 
-
-        # Draw FPS on frame
-        frame = drawing.draw_fps(frame, 1/dt)
-
-        # Copy the frame (we'll use the copied frame to visualize the Kalman-estimated board state)
-        frame_kalman = frame.copy()
-
-        # Draw the axes
-        if draw_aruco_axes is True:
-            frame_kalman = drawing.draw_pose(frame_kalman, camera_matrix, camera_distortion, rvec_kalman, tvec_kalman, aruco_tag_size_meters / 2)
+            # Make the image 3 channel color for plotting
+            if len(frame.shape) == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            
+            # Estimate the board pose if any tags were detected
             if len(detectedCorners) > 0:
-                frame = drawing.draw_pose(frame, camera_matrix, camera_distortion, rvec, tvec, aruco_tag_size_meters / 2)
+                
+                # Draw IDs?
+                if draw_aruco_ids is True:
+                    frame = drawing.draw_ids(frame, detectedCorners, detectedIds)
+            
+                if draw_aruco_edges is True:
+                    frame = drawing.draw_edges(frame, detectedCorners)
 
-        # Display the image
-        cv2.imshow("Image", frame)
-        cv2.imshow("Kalman", frame_kalman)
-        
+                if draw_corner_nums is True:
+                    frame = drawing.draw_corners(frame, detectedCorners)
+
+                if draw_tracking_status is True:
+                    frame = drawing.draw_tracking(frame, detectedCorners)
+
+            # Draw FPS on frame
+            frame = drawing.draw_fps(frame, 1/dt)
+
+            # Draw the axes
+            if draw_aruco_axes is True:
+                if i == 0:
+                    tvec = kf.statePost[0:3]
+                    rvec = kf.statePost[3:6]
+                    frame = drawing.draw_pose(frame, cameraMatrix, distCoeffs, rvec, tvec, aruco_tag_size_meters / 2)
+                else:
+                    if len(detectedCorners) > 0:
+                        tvec = measurement[0:3]
+                        rvec = measurement[3:]
+                        frame = drawing.draw_pose(frame, cameraMatrix, distCoeffs, rvec, tvec, aruco_tag_size_meters / 2)
+
+             # Display the image
+            frame_title = str(cameraBoardSockets[i])
+            cv2.imshow(frame_title, frame)
+
         key=cv2.waitKey(1)
         if key == ord('q'):
             break
@@ -302,17 +292,6 @@ with dai.Device(pipeline) as device:
                 print("Debugging OFF")
 
         print("FPS: %0.2f" % (1/dt))
-
-        # Update previous rotation matrix
-        rmat_kalman_prev = rmat_kalman
-        rvec_kalman_prev = rvec_kalman
-
-        if (tvec[-1] < 0) and (debug is True):
-            print("Warning: tvec[-1] < 0")
-            set_trace()
-        if (rnorm_kalman > 2) and (debug is True):
-            print("Warning: norm(rvec_kalman) > threshold")
-            set_trace()
 
 
 

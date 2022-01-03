@@ -57,3 +57,20 @@ def estimatePoseBoardAndValidate(detectedCorners, detectedIds, board, camera_mat
     # If the z coordinate is still negative, 
     # return the results but 
     return(ret, rvec, tvec, valid)
+
+def getPoseMeasurement(frame, board, cameraMatrix, distCoeffs, arucoDict, parameters):
+    (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=parameters)
+    detectedCorners, detectedIds, rejectedCorners, recoveredIdxs = cv2.aruco.refineDetectedMarkers(frame, board, 
+        detectedCorners, detectedIds, rejectedCorners, 
+        cameraMatrix = cameraMatrix, distCoeffs = distCoeffs, parameters=parameters)
+    
+    # Estimate the board pose if any tags were detected
+    valid = False
+    if len(detectedCorners) > 0:
+        [ret, rvec, tvec, valid] = estimatePoseBoardAndValidate(detectedCorners, detectedIds, board, cameraMatrix, distCoeffs, np.zeros(3), np.zeros(3))
+        
+    if valid is True:
+        measurement = np.concatenate([tvec, rvec], axis=0).astype(np.float64)
+    else:
+        measurement = np.array([])
+    return valid, measurement, detectedCorners, detectedIds
