@@ -9,6 +9,9 @@ from pdb import set_trace
 np.set_printoptions(precision=2)
 np.set_printoptions(floatmode = "fixed")
 
+def clamp(num, v0, v1):
+    return max(v0, min(num, v1))
+
 def create_aruco_cube(cube_width_m = 0.0508, tag_width_m = 0.040, board_ids = [0,1,2,3,4,5], aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)):
     # Create an "aruco cube" using the aruco board class
     # Order of tags in board_id should be: [front, right, back, left, top, bottom]
@@ -69,7 +72,7 @@ def estimatePoseBoardAndValidate(detectedCorners, detectedIds, board, camera_mat
 out_video_path = None
 
 # Draw tracking? 
-draw_tracking = True
+draw_tracking = False
 
 # Draw corner numbers?
 draw_corner_nums = False
@@ -84,7 +87,13 @@ draw_aruco_ids = False
 draw_aruco_axes = True
 
 # Which camera to use ("mono_left," "mono_right," or "color")
-camera_type = "mono_right"
+camera_type = "mono_left"
+
+# Manual focus stuff
+LENS_STEP = 3
+lensPos = 150
+lensMin = 0
+lensMax = 255
 
 # For plotting
 tracker_color = (0,255,255) # Line / text color
@@ -100,19 +109,19 @@ arucoParams.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_CONTOUR
 # Aruco tag size in meters
 # Small cube uses 40 mm tags
 # Big cube uses 80 mm tags
-aruco_tag_size_meters = 0.080 # 4 inch cube
-# aruco_tag_size_meters = 0.040 # 2 inch cube
+aruco_tag_size_meters = 0.040 # 2 inch cube
+# aruco_tag_size_meters = 0.080 # 4 inch cube
 
 # Length of each side of the aruco cube in meters.
 # 2 inch = 0.0508 mm 
 # 4 inch = 0.1016 mm
-aruco_cube_size_meters = 0.1016 # 4 inch cube
-# aruco_cube_size_meters = 0.0508 # 2 inch cube
+aruco_cube_size_meters = 0.0508 # 2 inch cube
+# aruco_cube_size_meters = 0.1016 # 4 inch cube
 
 # Create aruco board object (for the 4" cube)
 # Order of tags in board_id should be: [front, right, back, left, top, bottom]
-board_ids = np.array([5, 6, 7, 8, 9, 10]) # 4 inch cube
-# board_ids = np.array([0, 1, 2, 3, 5, 4]) # 2 inch cube. There is actually no tag 5; need it to specify cube 
+board_ids = np.array([0, 1, 2, 3, 5, 4]) # 2 inch cube. There is actually no tag 5; need it to specify cube 
+# board_ids = np.array([5, 6, 7, 8, 9, 10]) # 4 inch cube
 
 # Make the aruco cube
 board = create_aruco_cube(cube_width_m = aruco_cube_size_meters, tag_width_m = aruco_tag_size_meters, board_ids = board_ids, aruco_dict = arucoDict)
@@ -133,7 +142,7 @@ if camera_type == "color":
     cameraBoardSocket = dai.CameraBoardSocket.RGB
 else: 
     cam = pipeline.create(dai.node.MonoCamera)
-    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
+    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
     cam.setFps(120)
     inputFrameShape = cam.getResolutionSize()
     if camera_type == "mono_left":
@@ -154,6 +163,10 @@ xOutImage = pipeline.create(dai.node.XLinkOut)
 xOutImage.setStreamName("imageOut")
 xOutImage.input.setBlocking(False)
 xOutImage.input.setQueueSize(1)
+
+controlIn = pipeline.create(dai.node.XLinkIn)
+controlIn.setStreamName('control')
+controlIn.out.link(cam.inputControl)
 
 # Send the images to the output queues
 if isinstance(cam, dai.node.ColorCamera):
@@ -234,6 +247,8 @@ kf.errorCovPost = 1E6 * np.eye(dim_state, dtype=np.float64)
 
 # Connect and start pipeline
 with dai.Device(pipeline) as device:
+
+    controlQueue = device.getInputQueue('control')
 
     # Get camera calibration info
     calibData = device.readCalibration()
@@ -372,6 +387,14 @@ with dai.Device(pipeline) as device:
                 print("Debugging ON")
             else:
                 print("Debugging OFF")
+        elif key in [ord(','), ord('.')]:
+            if key == ord(','): lensPos -= LENS_STEP
+            if key == ord('.'): lensPos += LENS_STEP
+            lensPos = clamp(lensPos, lensMin, lensMax)
+            print("Setting manual focus, lens position: ", lensPos)
+            ctrl = dai.CameraControl()
+            ctrl.setManualFocus(lensPos)
+            controlQueue.send(ctrl)
 
         # Update previous rotation matrix
         rmat_kalman_prev = rmat_kalman
