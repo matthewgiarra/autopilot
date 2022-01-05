@@ -1,6 +1,8 @@
 
 import numpy as np
 import cv2
+from pdb import set_trace
+import traceback
 
 def create_aruco_cube(board_ids, aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50), cube_width_m = 0.0508, tag_width_m = 0.040):
     # Create an "aruco cube" using the aruco board class
@@ -59,7 +61,13 @@ def estimatePoseBoardAndValidate(detectedCorners, detectedIds, board, camera_mat
     return(ret, rvec, tvec, valid)
 
 def getPoseMeasurement(frame, board, cameraMatrix, distCoeffs, arucoDict, parameters):
-    (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=parameters)
+    try:
+        (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=parameters)
+    except:
+        # CORNER_REFINE_CONTOUR sometimes throws an error from LAPACK re: underdetermined systems. Not sure why.
+        # Switch the corner refinement method and try again.
+        parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_NONE
+        (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=parameters)
     detectedCorners, detectedIds, rejectedCorners, recoveredIdxs = cv2.aruco.refineDetectedMarkers(frame, board, 
         detectedCorners, detectedIds, rejectedCorners, 
         cameraMatrix = cameraMatrix, distCoeffs = distCoeffs, parameters=parameters)

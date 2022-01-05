@@ -46,17 +46,18 @@ arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
 arucoParams = cv2.aruco.DetectorParameters_create()
 arucoParams.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_CONTOUR
 
-# Aruco tag size in meters
-# Small cube uses 40 mm tags
-# Big cube uses 80 mm tags
-aruco_tag_size_meters = 0.040 # 2 inch cube
-# aruco_tag_size_meters = 0.080 # 4 inch cube
 
-# Length of each side of the aruco cube in meters.
-# 2 inch = 0.0508 mm 
-# 4 inch = 0.1016 mm
+# # Aruco tag size in meters
+# # Small cube uses 40 mm tags
+# # Big cube uses 80 mm tags
+aruco_tag_size_meters = 0.040 # 2 inch cube
+# # aruco_tag_size_meters = 0.080 # 4 inch cube
+
+# # Length of each side of the aruco cube in meters.
+# # 2 inch = 0.0508 m 
+# # 4 inch = 0.1016 m
 aruco_cube_size_meters = 0.0508 # 2 inch cube
-# aruco_cube_size_meters = 0.1016 # 4 inch cube
+# # aruco_cube_size_meters = 0.1016 # 4 inch cube
 
 # Create aruco board object (for the 4" cube)
 # Order of tags in board_id should be: [front, right, back, left, top, bottom]
@@ -70,7 +71,6 @@ board = aruco.create_aruco_cube(board_ids = board_ids, aruco_dict = arucoDict, c
 pipeline = dai.Pipeline()
 
 # Number of cameras
-num_cams = 2
 cam_fps = 120
 
 # The reference coordinate system is cameraBoardSockets[0]
@@ -81,7 +81,7 @@ cameras = []
 xOutImages = []
 
 # Set up pipeline
-for i in range(num_cams):
+for i in range(len(cameraBoardSockets)):
 
     xOutImage = pipeline.create(dai.node.XLinkOut)
     xOutImage.input.setBlocking(False)
@@ -169,7 +169,12 @@ with dai.Device(pipeline) as device:
     camera_extrinsics = []
     for i, cam in enumerate(cameras):
         if i > 0:
-            extrinsicMatrix = np.array(calibData.getCameraExtrinsics(cam.getBoardSocket(), cameras[0].getBoardSocket()))
+            # extrinsicMatrix = np.array(calibData.getCameraExtrinsics(cam.getBoardSocket(), cameras[0].getBoardSocket()))
+            extrinsicMatrix = np.array(calibData.getCameraExtrinsics(cameras[0].getBoardSocket(), cam.getBoardSocket()))
+
+            # calibData outputs the translation part of the extrinsic matrix in centimeters.
+            # In this house we work in meters!
+            extrinsicMatrix[0:3, 3] /= 100
         else:
             extrinsicMatrix = np.eye(4)
         camera_extrinsics.append(extrinsicMatrix)
@@ -265,22 +270,29 @@ with dai.Device(pipeline) as device:
             # Draw FPS on frame
             frame = drawing.draw_fps(frame, 1/dt)
 
-            # Draw the axes
+            # Read the pose from the kf state vector
+            tvec = kf.statePost[0:3]
+            rvec = kf.statePost[3:6]
+
+            # Pose as 4x4 homogeneous coordinate transform 
+            pose_mat = np.eye(4)
+            pose_mat[0:3, 0:3], _ = cv2.Rodrigues(rvec)
+            pose_mat[0:3, 3] = np.transpose(tvec)
+            pose_mat_transformed = np.matmul(camera_extrinsics[i], pose_mat)
+            pose_mat_transformed = pose_mat_transformed / pose_mat_transformed[3,3]
+
+            rvec_transformed, _ = cv2.Rodrigues(pose_mat_transformed[0:3, 0:3])
+            tvec_transformed = pose_mat_transformed[0:3, 3]
+
             if draw_aruco_axes is True:
-                if i == 0:
-                    tvec = kf.statePost[0:3]
-                    rvec = kf.statePost[3:6]
-                    frame = drawing.draw_pose(frame, cameraMatrix, distCoeffs, rvec, tvec, aruco_tag_size_meters / 2)
-                else:
-                    if len(detectedCorners) > 0:
-                        tvec = measurement[0:3]
-                        rvec = measurement[3:]
-                        frame = drawing.draw_pose(frame, cameraMatrix, distCoeffs, rvec, tvec, aruco_tag_size_meters / 2)
+                frame = drawing.draw_pose(frame, cameraMatrix, distCoeffs, rvec_transformed, tvec_transformed, aruco_tag_size_meters / 2)
 
              # Display the image
             frame_title = str(cameraBoardSockets[i])
             cv2.imshow(frame_title, frame)
 
+        print("FPS: %0.2f" % (1/dt))
+        
         key=cv2.waitKey(1)
         if key == ord('q'):
             break
@@ -291,8 +303,7 @@ with dai.Device(pipeline) as device:
             else:
                 print("Debugging OFF")
 
-        print("FPS: %0.2f" % (1/dt))
-
+print("Exiting")
 
 
     
