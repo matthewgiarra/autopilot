@@ -82,3 +82,56 @@ def getPoseMeasurement(frame, board, cameraMatrix, distCoeffs, arucoDict, parame
     else:
         measurement = np.array([])
     return valid, measurement, detectedCorners, detectedIds
+
+
+def transformMeasurement(measurement, cameraExtrinsics):
+    # Get translation & rotation vectors
+    tvec = measurement[0:3]
+    rvec = measurement[3:6]
+
+    # Pose as 4x4 homogeneous coordinate transform 
+    pose_mat = np.eye(4)
+    pose_mat[0:3, 0:3], _ = cv2.Rodrigues(rvec)
+    pose_mat[0:3, 3] = np.transpose(tvec)
+    pose_mat_transformed = np.matmul(cameraExtrinsics, pose_mat)
+    pose_mat_transformed = pose_mat_transformed / pose_mat_transformed[3,3]
+
+    # Back to vectors
+    rvec_transformed, _ = cv2.Rodrigues(pose_mat_transformed[0:3, 0:3])
+    tvec_transformed = pose_mat_transformed[0:3, 3]
+
+    # Back to measurement
+    measurement_transformed = np.concatenate([tvec_transformed, np.squeeze(rvec_transformed)])
+
+    # Done
+    return measurement_transformed
+
+def alignPose(measurement, reference):
+
+    # measurement[3:] is the rvec to align
+    # reference[3:] is the rvec to which to align measurement[3:]
+    if np.linalg.norm(measurement[3:] - reference[3:]) > np.pi:
+        measurement[3:] *= -1
+    return measurement    
+
+
+# def getPoseMeasurementMultiCam(frames, board, cameraMatrices, distCoeffs, cameraExtrinsics, arucoDict, parameters):
+
+#     assert len(frames) == len(cameraMatrices) == len(distCoeffs), "Number of frames, camera matrices, an dist coeffs must be equal"
+
+#     # Number of cameras
+#     num_cams = len(frames)
+
+#     valids = []
+#     measurements = []
+#     for i in range(num_cams):
+#         valid, measurement, detectedCorners, detectedids = getPoseMeasurement(frames[i], board, 
+#             cameraMatrices[i], distCoeffs[i], arucoDict, parameters)
+#         valids.append(valid)
+#         measurements.append(measurement)
+
+#     # Get the index of the first valid measurement
+#     anchor_idx = valids.index(True)
+
+
+# def alignMeasurements(measurements, cameraMatrices):

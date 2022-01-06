@@ -46,23 +46,22 @@ arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
 arucoParams = cv2.aruco.DetectorParameters_create()
 arucoParams.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_CONTOUR
 
-
 # # Aruco tag size in meters
 # # Small cube uses 40 mm tags
 # # Big cube uses 80 mm tags
-aruco_tag_size_meters = 0.040 # 2 inch cube
-# # aruco_tag_size_meters = 0.080 # 4 inch cube
+# aruco_tag_size_meters = 0.040 # 2 inch cube
+aruco_tag_size_meters = 0.080 # 4 inch cube
 
 # # Length of each side of the aruco cube in meters.
 # # 2 inch = 0.0508 m 
 # # 4 inch = 0.1016 m
-aruco_cube_size_meters = 0.0508 # 2 inch cube
-# # aruco_cube_size_meters = 0.1016 # 4 inch cube
+# aruco_cube_size_meters = 0.0508 # 2 inch cube
+aruco_cube_size_meters = 0.1016 # 4 inch cube
 
 # Create aruco board object (for the 4" cube)
 # Order of tags in board_id should be: [front, right, back, left, top, bottom]
-board_ids = np.array([0, 1, 2, 3, 5, 4]) # 2 inch cube. There is actually no tag 5; need it to specify cube 
-# board_ids = np.array([5, 6, 7, 8, 9, 10]) # 4 inch cube
+# board_ids = np.array([0, 1, 2, 3, 5, 4]) # 2 inch cube. There is actually no tag 5; need it to specify cube 
+board_ids = np.array([5, 6, 7, 8, 9, 10]) # 4 inch cube
 
 # Make the aruco cube
 board = aruco.create_aruco_cube(board_ids = board_ids, aruco_dict = arucoDict, cube_width_m = aruco_cube_size_meters, tag_width_m = aruco_tag_size_meters)
@@ -72,6 +71,7 @@ pipeline = dai.Pipeline()
 
 # Number of cameras
 cam_fps = 120
+video_fps = 30
 
 # The reference coordinate system is cameraBoardSockets[0]
 cameraBoardSockets = [dai.CameraBoardSocket.LEFT, dai.CameraBoardSocket.RIGHT]
@@ -97,68 +97,6 @@ for i in range(len(cameraBoardSockets)):
     cameras.append(cam)
     xOutImages.append(xOutImage)
 
-# # # # # Kalman Filter set up # # # # # #
-
-# Dimensionality of state space and measurements
-dim_state = 12
-dim_meas = 6
-dt = 1 / cam.getFps()
-
-# Instantiate the kalman filter object
-kf = kalman.KalmanFilterPose(dim_state, dim_meas, 0, type=cv2.CV_64F)
-
-# State transition matrix (2D constant velocity)
-F = np.array(
-    [
-    [ 1, 0, 0, 0, 0, 0, dt, 0, 0, 0, 0, 0],
-    [ 0, 1, 0, 0, 0, 0, 0, dt, 0, 0, 0, 0],
-    [ 0, 0, 1, 0, 0, 0, 0, 0, dt, 0, 0, 0],
-    [ 0, 0, 0, 1, 0, 0, 0, 0, 0, dt, 0, 0],
-    [ 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, dt, 0],
-    [ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, dt],
-    [ 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
-    [ 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-    [ 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
-    [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
-    [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
-    ]
-, dtype=np.float64)
-
-# Indices of state transition matrix containing dt
-dt_idx = np.where(F == dt)
-
-# Observation matrix
-H = np.array(
-    [
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
-    ], dtype = np.float64)
-
-# Covariance of process noise
-Q = 5E-3 * np.eye(dim_state, dtype=np.float64)
-
-# Covariance of measurement noise
-R = 1E-2 * np.eye(dim_meas, dtype=np.float64)
-
-# kf.statePre: xk_km1
-# kf.errorCovPre: Pk_km1
-# kf.statePost: xk_k
-# kf.errorCovPost: Pk_k
-
-kf.transitionMatrix = F
-kf.measurementMatrix = H
-kf.processNoiseCov = Q
-kf.measurementNoiseCov = R
-kf.statePost = np.zeros(dim_state, dtype=np.float64)
-kf.errorCovPost = 1E6 * np.eye(dim_state, dtype=np.float64)
-
-# # # # # End kalman filter set up # # # #
-
 # Connect and start pipeline
 with dai.Device(pipeline) as device:
 
@@ -169,7 +107,6 @@ with dai.Device(pipeline) as device:
     camera_extrinsics = []
     for i, cam in enumerate(cameras):
         if i > 0:
-            # extrinsicMatrix = np.array(calibData.getCameraExtrinsics(cam.getBoardSocket(), cameras[0].getBoardSocket()))
             extrinsicMatrix = np.array(calibData.getCameraExtrinsics(cameras[0].getBoardSocket(), cam.getBoardSocket()))
 
             # calibData outputs the translation part of the extrinsic matrix in centimeters.
@@ -191,6 +128,13 @@ with dai.Device(pipeline) as device:
         camera_matrices.append(camera_matrix)
         camera_distortions.append(camera_distortion)
 
+    # Open a video writer object
+    if out_video_path is not None:
+        video_resolution = (2 * resolution[0], resolution[1])
+        outVideo = cv2.VideoWriter(out_video_path, cv2.VideoWriter_fourcc('M','J','P','G'), video_fps, video_resolution)
+    else:
+        outVideo = None
+    
     # Listen for data on the device xLinkOut queue
     image_out_queues = []
     for xOutImage in xOutImages:
@@ -203,12 +147,17 @@ with dai.Device(pipeline) as device:
     rvec_kalman = np.zeros(3)
     debug = False
 
+    # Set up the kalman filter
+    dt = 1 / cam.getFps() # Time step
+    kf, dt_idx = kalman.kalmanFilter6DOFConstantVelocityMultiCam(dt = dt)
+    H_ref = kf.measurementMatrix
+    R_ref_diag = np.diag(kf.measurementNoiseCov)
+
     # Main processing loop
     while True:
 
         # Update kalman state predictions (calculate xk_km1)
-        F[dt_idx] = dt
-        kf.transitionMatrix = F
+        kf.transitionMatrix[dt_idx] = dt
         kf.predict()
 
         # Update time step
@@ -216,11 +165,9 @@ with dai.Device(pipeline) as device:
         dt = new_frame_time - prev_frame_time
         prev_frame_time = new_frame_time
 
+        # Initialize vectors for frames (images) and pose measurements
         frames = []
         measurements = []
-        detectedCornersAllCams = []
-        detectedIdsAllCams = []
-        validAllCams = []
 
         # Get all the frames before we do any processing so that they're closely spaced in time
         for i, queue in enumerate(image_out_queues):
@@ -229,23 +176,26 @@ with dai.Device(pipeline) as device:
 
         # Process each frame
         for i, frame in enumerate(frames):
-
             cameraMatrix = camera_matrices[i]
             distCoeffs    = camera_distortions[i]
 
             valid, measurement, detectedCorners, detectedIds = aruco.getPoseMeasurement(frame, board, 
             cameraMatrix=cameraMatrix, distCoeffs = distCoeffs, arucoDict = arucoDict, parameters=arucoParams)
 
-            # Correct state prediction (calculate xk_k)
-            # Only do this if the measurement is "good," i.e. z coordinate > 0
-            if valid is True and i == 0:
-                kf.correct(measurement)
+            # Transform measurement to reference camera's coordinate system
+            if valid is True:
+                
+                # Transform the measurement into the reference coordinate system (cameras[0])
+                measurement = aruco.transformMeasurement(measurement, np.linalg.inv(camera_extrinsics[i]))
 
-            # Append the measurement to the list of measurements
-            measurements.append(measurement)
-            validAllCams.append(valid)
-            detectedCornersAllCams.append(detectedCorners)
-            detectedIdsAllCams.append(detectedIds)
+                # If the two rvecs differ by >= pi then one of them has flipped.
+                # The actual angle between the vectors is smaller than the norm of their differences.
+                # Flip the new measurement to point in the same direction as the reference measurement
+                if len(measurements) > 0:
+                    measurement = aruco.alignPose(measurement, measurements[0])
+
+                # Make the measurements array              
+                measurements.append(measurement)
 
             # Make the image 3 channel color for plotting
             if len(frame.shape) == 2:
@@ -270,11 +220,31 @@ with dai.Device(pipeline) as device:
             # Draw FPS on frame
             frame = drawing.draw_fps(frame, 1/dt)
 
-            # Read the pose from the kf state vector
-            tvec = kf.statePost[0:3]
-            rvec = kf.statePost[3:6]
+            # Upate frames vector
+            frames[i] = frame
+        
+        # Update the kalman filter's measurement matrix according to 
+        # the number of valid measurements that were recorded.
+        if len(measurements) > 0:
 
-            # Pose as 4x4 homogeneous coordinate transform 
+            # Set the measurement matrix and meas. noise matrix for the number of valid measurements
+            H = np.concatenate([H_ref for x in measurements], axis=0)
+            R = np.diag(np.concatenate([R_ref_diag for x in measurements], axis=0))    
+            measurement = np.concatenate(measurements)
+
+            # Set kalman filter parameters for this iteration
+            kf.measurementMatrix = H
+            kf.measurementNoiseCov = R
+
+            # Correct state prediction (calculate xk_k)
+            kf.correct(measurement)
+
+        # Read the pose from the kf state vector
+        tvec = kf.statePost[0:3]
+        rvec = kf.statePost[3:6]
+
+        # Draw the axes on the rames
+        for i, frame in enumerate(frames):
             pose_mat = np.eye(4)
             pose_mat[0:3, 0:3], _ = cv2.Rodrigues(rvec)
             pose_mat[0:3, 3] = np.transpose(tvec)
@@ -283,15 +253,21 @@ with dai.Device(pipeline) as device:
 
             rvec_transformed, _ = cv2.Rodrigues(pose_mat_transformed[0:3, 0:3])
             tvec_transformed = pose_mat_transformed[0:3, 3]
-
+            
             if draw_aruco_axes is True:
-                frame = drawing.draw_pose(frame, cameraMatrix, distCoeffs, rvec_transformed, tvec_transformed, aruco_tag_size_meters / 2)
+                frame = drawing.draw_pose(frame, camera_matrices[i], camera_distortions[i], rvec_transformed, tvec_transformed, aruco_tag_size_meters / 2)
 
-             # Display the image
+            # Display the image
             frame_title = str(cameraBoardSockets[i])
             cv2.imshow(frame_title, frame)
 
-        print("FPS: %0.2f" % (1/dt))
+        # Write the video frame
+        if outVideo is not None:
+            frames_cat = np.concatenate(frames, axis=1)
+            outVideo.write(frames_cat)
+
+        # Print pose parameters to console
+        print(np.squeeze(np.concatenate([tvec, rvec], axis=0).astype(np.float64)))
         
         key=cv2.waitKey(1)
         if key == ord('q'):
@@ -303,6 +279,11 @@ with dai.Device(pipeline) as device:
             else:
                 print("Debugging OFF")
 
+# Close the video
+if out_video_path is not None:
+    outVideo.release()
+
+# GTFO
 print("Exiting")
 
 
