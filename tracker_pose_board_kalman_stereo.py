@@ -153,17 +153,20 @@ with dai.Device(pipeline) as device:
     H_ref = kf.measurementMatrix
     R_ref_diag = np.diag(kf.measurementNoiseCov)
 
+    count = 0
+
     # Main processing loop
     while True:
 
+        # Update time step
+        new_frame_time = time.time()
+        if prev_frame_time > 0:
+            dt = new_frame_time - prev_frame_time
+        prev_frame_time = new_frame_time
+        
         # Update kalman state predictions (calculate xk_km1)
         kf.transitionMatrix[dt_idx] = dt
         kf.predict()
-
-        # Update time step
-        new_frame_time = time.time()
-        dt = new_frame_time - prev_frame_time
-        prev_frame_time = new_frame_time
 
         # Initialize vectors for frames (images) and pose measurements
         frames = []
@@ -236,6 +239,8 @@ with dai.Device(pipeline) as device:
             kf.measurementMatrix = H
             kf.measurementNoiseCov = R
 
+            print("Loop %d" % count)
+
             # Correct state prediction (calculate xk_k)
             kf.correct(measurement)
 
@@ -278,6 +283,7 @@ with dai.Device(pipeline) as device:
                 print("Debugging ON")
             else:
                 print("Debugging OFF")
+        count += 1
 
 # Close the video
 if out_video_path is not None:
