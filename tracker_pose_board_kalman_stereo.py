@@ -146,6 +146,7 @@ with dai.Device(pipeline) as device:
     rmat_kalman_prev = np.eye(3)
     rvec_kalman = np.zeros(3)
     debug = False
+    plotFiltered = True
 
     # Set up the kalman filter
     dt = 1 / cam.getFps() # Time step
@@ -174,7 +175,11 @@ with dai.Device(pipeline) as device:
 
         # Get all the frames before we do any processing so that they're closely spaced in time
         for i, queue in enumerate(image_out_queues):
+
+            # Get the frame from the queue
             frame = queue.get().getCvFrame()
+            if len(frame.shape) == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             frames.append(frame)
 
         # Process each frame
@@ -185,25 +190,6 @@ with dai.Device(pipeline) as device:
             valid, measurement, detectedCorners, detectedIds = aruco.getPoseMeasurement(frame, board, 
             cameraMatrix=cameraMatrix, distCoeffs = distCoeffs, arucoDict = arucoDict, parameters=arucoParams)
 
-            # Transform measurement to reference camera's coordinate system
-            if valid is True:
-                
-                # Transform the measurement into the reference coordinate system (cameras[0])
-                measurement = aruco.transformMeasurement(measurement, np.linalg.inv(camera_extrinsics[i]))
-
-                # If the two rvecs differ by >= pi then one of them has flipped.
-                # The actual angle between the vectors is smaller than the norm of their differences.
-                # Flip the new measurement to point in the same direction as the reference measurement
-                if len(measurements) > 0:
-                    measurement = aruco.alignPose(measurement, measurements[0])
-
-                # Make the measurements array              
-                measurements.append(measurement)
-
-            # Make the image 3 channel color for plotting
-            if len(frame.shape) == 2:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            
             # Estimate the board pose if any tags were detected
             if len(detectedCorners) > 0:
                 
@@ -220,6 +206,31 @@ with dai.Device(pipeline) as device:
                 if draw_tracking_status is True:
                     frame = drawing.draw_tracking(frame, detectedCorners)
 
+            if plotFiltered is False:
+                cv2.putText(frame, "Kalman filter OFF",
+                    (2, 25), cv2.FONT_HERSHEY_TRIPLEX, 1, (255,255,255))
+
+            if draw_aruco_axes is True and plotFiltered is False and valid is True:
+                tvec = np.array(measurement[0:3])
+                rvec = np.array(measurement[3:])
+                drawing.draw_pose(frame, camera_matrix=cameraMatrix, camera_distortion=distCoeffs,
+                rvec=rvec,tvec=tvec, axis_size = aruco_tag_size_meters / 2)
+
+            # Transform measurement to reference camera's coordinate system
+            if valid is True:
+                
+                # Transform the measurement into the reference coordinate system (cameras[0])
+                measurement = aruco.transformMeasurement(measurement, np.linalg.inv(camera_extrinsics[i]))
+
+                # If the two rvecs differ by >= pi then one of them has flipped.
+                # The actual angle between the vectors is smaller than the norm of their differences.
+                # Flip the new measurement to point in the same direction as the reference measurement
+                if len(measurements) > 0:
+                    measurement = aruco.alignPose(measurement, measurements[0])
+
+                # Make the measurements array              
+                measurements.append(measurement)
+            
             # Draw FPS on frame
             frame = drawing.draw_fps(frame, 1/dt)
 
@@ -258,8 +269,13 @@ with dai.Device(pipeline) as device:
 
             rvec_transformed, _ = cv2.Rodrigues(pose_mat_transformed[0:3, 0:3])
             tvec_transformed = pose_mat_transformed[0:3, 3]
+
+            # Draw text saying that we're plotting filtered data
+            if plotFiltered is True:
+                cv2.putText(frame, "Kalman filter ON", (2, 25), cv2.FONT_HERSHEY_TRIPLEX, 1, (255,255,255))
             
-            if draw_aruco_axes is True:
+            # Draw the pose
+            if draw_aruco_axes is True and plotFiltered is True:
                 frame = drawing.draw_pose(frame, camera_matrices[i], camera_distortions[i], rvec_transformed, tvec_transformed, aruco_tag_size_meters / 2)
 
             # Display the image
@@ -283,6 +299,12 @@ with dai.Device(pipeline) as device:
                 print("Debugging ON")
             else:
                 print("Debugging OFF")
+        elif key == ord('k'):
+            plotFiltered = not plotFiltered
+            if plotFiltered: 
+                print("Kalman filter ON")
+            else:
+                print("Kalman filter OFF")
         count += 1
 
 # Close the video
