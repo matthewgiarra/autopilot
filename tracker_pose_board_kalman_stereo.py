@@ -29,6 +29,9 @@ draw_aruco_ids = False
 # Draw the cube pose?
 draw_aruco_axes = True
 
+# Draw xyz coordinates?
+draw_xyz = True
+
 # Which camera's coordinate system to report state in
 master_camera = "mono_right"
 
@@ -40,6 +43,13 @@ tracker_color = (0,255,255) # Line / text color
 tracker_thickness = 4 # Line thickness
 aruco_edge_color = (0,0,255) # Line / text color
 aruco_edge_thickness = 4 # Line thickness
+
+# For plotting coordinates
+xyz_dy = 35
+xyz_yo = 0
+xyz_xo = 70
+xyz_color = (0,0,0)
+xyz_size = 0.8
 
 # Aruco stuff
 arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
@@ -261,14 +271,33 @@ with dai.Device(pipeline) as device:
 
         # Draw the axes on the rames
         for i, frame in enumerate(frames):
+
+            # Transform cube coordinates into current camera's frame of ref
             pose_mat = np.eye(4)
             pose_mat[0:3, 0:3], _ = cv2.Rodrigues(rvec)
             pose_mat[0:3, 3] = np.transpose(tvec)
             pose_mat_transformed = np.matmul(camera_extrinsics[i], pose_mat)
             pose_mat_transformed = pose_mat_transformed / pose_mat_transformed[3,3]
-
             rvec_transformed, _ = cv2.Rodrigues(pose_mat_transformed[0:3, 0:3])
             tvec_transformed = pose_mat_transformed[0:3, 3]
+
+            # Coordinates to plot
+            xyz = np.squeeze(tvec_transformed)
+
+            # Draw xyz
+            if draw_xyz:
+                imagePoints, _ = cv2.projectPoints(objectPoints = tvec_transformed.astype(np.float32), rvec = np.array([0,0,0], dtype=np.float32), tvec = np.array([0,0,0], dtype=np.float32), cameraMatrix = camera_matrix, distCoeffs = camera_distortion)
+                xy = np.squeeze(imagePoints)
+                yc = int(xy[1])
+                xc = int(xy[0])
+
+                try:
+                    cv2.putText(frame, "X: {:.0f} mm".format(xyz[0]*1000), (int(xc + xyz_xo), int(yc) + xyz_yo ), cv2.FONT_HERSHEY_TRIPLEX,         xyz_size, xyz_color)
+                    cv2.putText(frame, "Y: {:.0f} mm".format(xyz[1]*1000), (int(xc + xyz_xo), int(yc) + xyz_yo + xyz_dy), cv2.FONT_HERSHEY_TRIPLEX,     xyz_size, xyz_color)
+                    cv2.putText(frame, "Z: {:.0f} mm".format(xyz[2]*1000), (int(xc + xyz_xo), int(yc) + xyz_yo + 2 * xyz_dy), cv2.FONT_HERSHEY_TRIPLEX, xyz_size, xyz_color)
+                except Exception:
+                    print(Exception)
+                    set_trace()
 
             # Draw text saying that we're plotting filtered data
             if plotFiltered is True:
