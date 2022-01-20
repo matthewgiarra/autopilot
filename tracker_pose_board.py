@@ -15,7 +15,7 @@ def create_aruco_cube(cube_width_m = 0.0508, tag_width_m = 0.040, board_ids = [0
     # Tag corners: If you rotate the cube to view a different face using 
     # only one rotation, the tag corners sould be:
     #   [0 1 2 3] = [top left, top right, bottom right, bottom left]
-    
+
     c = cube_width_m
     t = tag_width_m
     board_corners = [
@@ -36,19 +36,19 @@ out_video_path = None
 draw_tracking = False
 
 # Draw corner numbers?
-draw_corner_nums = True
+draw_corner_nums = False
 
 # Draw edges of each tag?
-draw_aruco_edges = False
+draw_aruco_edges = True
 
 # Draw the ID of each tag?
-draw_aruco_ids = True
+draw_aruco_ids = False
 
 # Draw the cube pose?
 draw_aruco_axes = True
 
 # Which camera to use ("mono_left," "mono_right," or "color")
-camera_type = "color"
+camera_type = "mono_left"
 
 # For plotting
 tracker_color = (0,255,255) # Line / text color
@@ -57,28 +57,53 @@ aruco_color = (0,0,255) # Line / text color
 aruco_thickness = 4 # Line thickness
 
 # Aruco stuff
-arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+# arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_50)
 arucoParams = cv2.aruco.DetectorParameters_create()
+arucoParams.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_CONTOUR
 
 # Aruco tag size in meters
 # Small cube uses 40 mm tags
 # Big cube uses 80 mm tags
-aruco_tag_size_meters = 0.080 # 4 inch cube
-# aruco_tag_size_meters = 0.040 # 2 inch cube
+# aruco_tag_size_meters = 0.080 # 4 inch cube
+aruco_tag_size_meters = 0.040 # 2 inch cube
 
 # Length of each side of the aruco cube in meters.
 # 2 inch = 0.0508 mm 
 # 4 inch = 0.1016 mm
-aruco_cube_size_meters = 0.1016 # 4 inch cube
-# aruco_cube_size_meters = 0.0508 # 2 inch cube
+# aruco_cube_size_meters = 0.1016 # 4 inch cube
+aruco_cube_size_meters = 0.0508 # 2 inch cube
 
 # Create aruco board object (for the 4" cube)
 # Order of tags in board_id should be: [front, right, back, left, top, bottom]
-board_ids = np.array([5, 6, 7, 8, 9, 10]) # 4 inch cube
+# board_ids = np.array([5, 6, 7, 8, 9, 10]) # 4 inch cube
 # board_ids = np.array([0, 1, 2, 3, 5, 4]) # 2 inch cube. There is actually no tag 5; need it to specify cube 
 
+board_ids = np.array([0,1,2,3,4])
 # Make the aruco cube
-board = create_aruco_cube(cube_width_m = aruco_cube_size_meters, tag_width_m = aruco_tag_size_meters, board_ids = board_ids, aruco_dict = arucoDict)
+# board = create_aruco_cube(cube_width_m = aruco_cube_size_meters, tag_width_m = aruco_tag_size_meters, board_ids = board_ids, aruco_dict = arucoDict)
+page_height = 280 # mm
+page_width = 216 # mm
+yc = page_height/2
+xc = page_width/2
+xo = (np.array([40.366, 129.076, 71.246, 136.925, 40.266]) - page_width/2) / 1000
+yo = (page_height / 2 - np.array([29.113, 34.070, 112.140, 184.841, 204.256])) / 1000
+t = 0.050
+board_corners = [np.array([ [x, y, 0], [x+t, y, 0], [x+t, y-t, 0],  [x, y-t, 0]], dtype=np.float32) for x,y in zip(xo, yo)]
+board_corners = [np.array([ [x+t, y, 0], [x, y, 0], [x, y-t, 0],  [x+t, y-t, 0]], dtype=np.float32) for x,y in zip(xo, yo)]
+
+# c = cube_width_m
+
+# board_corners = [
+#     np.array([ [-t/2, t/2, 0],  [t/2, t/2, 0],  [t/2, -t/2, 0],  [-t/2, -t/2, 0]],  dtype=np.float32),
+#     np.array([ [c/2, t/2, 0],   [c/2, t/2, 0], [c/2, -t/2, 0], [c/2, -t/2, 0] ],  dtype=np.float32),
+#     np.array([ [t/2, t/2, 0],  [-t/2, t/2, 0],[-t/2, -t/2, 0],[t/2, -t/2, 0]],  dtype=np.float32),
+#     np.array([ [-c/2, t/2, 0], [-c/2, t/2, 0], [-c/2, -t/2, 0], [-c/2, -t/2, 0]], dtype=np.float32),
+#     np.array([ [-t/2, c/2, 0], [t/2, c/2, 0], [t/2, c/2, 0],   [-t/2, c/2, 0]],   dtype=np.float32),
+#     np.array([ [-t/2, -c/2, 0], [t/2, -c/2, 0], [t/2, -c/2, 0], [-t/2, -c/2, 0]], dtype=np.float32)
+# ]
+# set_trace()
+board = cv2.aruco.Board_create(board_corners, arucoDict, board_ids)
 
 # DepthAI Pipeline
 pipeline = dai.Pipeline()
@@ -95,7 +120,7 @@ if camera_type == "color":
     cameraBoardSocket = dai.CameraBoardSocket.RGB
 else: 
     cam = pipeline.create(dai.node.MonoCamera)
-    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
     cam.setFps(120)
     inputFrameShape = cam.getResolutionSize()
     if camera_type == "mono_left":
@@ -183,6 +208,13 @@ with dai.Device(pipeline) as device:
     qDetectionsIn = device.getInputQueue(name="inDetections", maxSize=4, blocking=False)
     qTracklets = device.getOutputQueue(name="trackletsOut", maxSize=4, blocking=False)
 
+    # rvec = cv2.mat.fromarray(np.zeros([1,1,3], dtype=np.float32))
+    # tvec = cv2.mat.fromarray(np.zeros([1,1,3], dtype=np.float32))
+
+    # rvec = np.zeros(3, dtype=np.float32)
+    rvec = np.array([0,0,0], dtype=np.float32)
+    tvec = np.array([0, 0, 0.5], dtype=np.float32)
+
     # Main processing loop
     while True:
         imgRaw = qImageOut.get()
@@ -201,17 +233,11 @@ with dai.Device(pipeline) as device:
 
         # Detect the aruco markers
         (corners_all, ids, rejected) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=arucoParams)
-        
+
         if len(corners_all) > 0:
             
             # Draw the axes of the aruco cube to show its pose
-            if draw_aruco_axes is True:
-                # Estimate the pose of the whole cube
-                [ret, rvec, tvec] = cv2.aruco.estimatePoseBoard(corners_all, ids, board, camera_matrix, camera_distortion, np.zeros([1,1,3]), np.zeros([1,1,3]))
-                frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec, tvec, aruco_tag_size_meters / 2)
-                print("rvec = " + str(np.squeeze(rvec)))
-                print("tvec = " + str(np.squeeze(tvec)))
-                print("")
+         
 
             # Draw IDs?
             if draw_aruco_ids is True:
@@ -235,6 +261,7 @@ with dai.Device(pipeline) as device:
 
                 # Draw the aruco tag border on the frame
                 if draw_aruco_edges is True:
+                    # set_trace()
                     frame = cv2.polylines(frame, [poly_pts], True, aruco_color, aruco_thickness)
                 
                 # Draw corner numbers
@@ -242,6 +269,24 @@ with dai.Device(pipeline) as device:
                     for j, corner in enumerate(tag_corners[0]):
                         cv2.putText(frame, str(j), (int(corner[0]), int(corner[1])), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (255,0,0))
             
+            if draw_aruco_axes is True:
+                xtxt = 450
+                ytxt = 600
+                dy = 25
+                fSize = 0.7
+                # Estimate the pose of the whole cube
+                [ret, rvec, tvec] = cv2.aruco.estimatePoseBoard(corners_all, ids, board, camera_matrix, camera_distortion, np.zeros([1,1,3]), np.zeros([1,1,3]))
+                # [ret, rvec, tvec] = cv2.aruco.estimatePoseBoard(corners_all, ids, board, camera_matrix, camera_distortion, rvec, tvec, False)
+                frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec, tvec, aruco_tag_size_meters / 1)
+                # frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec, tvec, aruco_tag_size_meters / 1.3)
+                cv2.putText(frame, "x: %0.0f mm" % (1000*tvec[0]), (int(xtxt), int(ytxt)), cv2.FONT_HERSHEY_TRIPLEX, fSize, (0,0,0))
+                cv2.putText(frame, "y: %0.0f mm" % (1000*tvec[1]), (int(xtxt), int(ytxt + dy)), cv2.FONT_HERSHEY_TRIPLEX, fSize, (0,0,0))
+                cv2.putText(frame, "z: %0.0f mm" % (1000*tvec[2]), (int(xtxt), int(ytxt + 2*dy)), cv2.FONT_HERSHEY_TRIPLEX, fSize, (0,0,0))
+
+                print("rvec = " + str(np.squeeze(rvec)))
+                print("tvec = " + str(np.squeeze(tvec)))
+                print("")
+
             # Normalize detection coordinates to (0-1)
             imgDetection = dai.ImgDetection()
             imgDetection.xmin = xmin / inputFrameShape[0]

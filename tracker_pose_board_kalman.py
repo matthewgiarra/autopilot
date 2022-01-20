@@ -86,6 +86,9 @@ draw_aruco_ids = False
 # Draw the cube pose?
 draw_aruco_axes = True
 
+# Draw the coordinates?
+draw_xyz = True
+
 # Which camera to use ("mono_left," "mono_right," or "color")
 camera_type = "mono_left"
 
@@ -142,7 +145,7 @@ if camera_type == "color":
     cameraBoardSocket = dai.CameraBoardSocket.RGB
 else: 
     cam = pipeline.create(dai.node.MonoCamera)
-    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
+    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     cam.setFps(120)
     inputFrameShape = cam.getResolutionSize()
     if camera_type == "mono_left":
@@ -357,7 +360,28 @@ with dai.Device(pipeline) as device:
         rmat_kalman, _ = cv2.Rodrigues(rvec_kalman)
         residual_mat = np.matmul(np.transpose(rmat_kalman), rmat_kalman_prev)
         residual_vec, _ = cv2.Rodrigues(residual_mat)
-        rnorm_kalman = np.linalg.norm(residual_vec) 
+        rnorm_kalman = np.linalg.norm(residual_vec)
+
+        
+        dy = 35
+        yo = 0
+        xo = 70
+        xyz_color = (226,43,138)
+        xyz_size = 0.8
+        xyz = np.squeeze(tvec_kalman)
+        if draw_xyz:
+            imagePoints, _ = cv2.projectPoints(objectPoints = tvec_kalman.astype(np.float32), rvec = np.array([0,0,0], dtype=np.float32), tvec = np.array([0,0,0], dtype=np.float32), cameraMatrix = camera_matrix, distCoeffs = camera_distortion)
+            xy = np.squeeze(imagePoints)
+            yc = int(xy[1])
+            xc = int(xy[0])
+            
+
+            try:
+                cv2.putText(frame, "X: {:.0f} mm".format(xyz[0]*1000), (int(xc + xo), int(yc) + yo ), cv2.FONT_HERSHEY_TRIPLEX,         xyz_size, xyz_color)
+                cv2.putText(frame, "Y: {:.0f} mm".format(xyz[1]*1000), (int(xc + xo), int(yc) + yo + dy), cv2.FONT_HERSHEY_TRIPLEX,     xyz_size, xyz_color)
+                cv2.putText(frame, "Z: {:.0f} mm".format(xyz[2]*1000), (int(xc + xo), int(yc) + yo + 2 * dy), cv2.FONT_HERSHEY_TRIPLEX, xyz_size, xyz_color)
+            except:
+                set_trace()
         
         # Draw FPS on frame
         cv2.putText(frame, "FPS: {:.2f}".format(fps),

@@ -5,10 +5,10 @@ import sys
 from pdb import set_trace
 
 # Output video path
-out_video_path = "out_pose.avi"
+out_video_path = None
 
 # Draw tracking? 
-draw_tracking = True
+draw_tracking = False
 
 # Which camera to use ("mono_left," "mono_right," or "color")
 camera_type = "mono_right"
@@ -17,10 +17,11 @@ camera_type = "mono_right"
 tracker_color = (0,255,255) # Line / text color
 tracker_thickness = 4 # Line thickness
 aruco_color = (0,0,255) # Line / text color
-aruco_thickness = 8 # Line thickness
+aruco_thickness = 4 # Line thickness
 
 # Aruco stuff
 arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_50)
 arucoParams = cv2.aruco.DetectorParameters_create()
 
 # DepthAI Pipeline
@@ -38,7 +39,7 @@ if camera_type == "color":
     cameraBoardSocket = dai.CameraBoardSocket.RGB
 else: 
     cam = pipeline.create(dai.node.MonoCamera)
-    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
     cam.setFps(120)
     inputFrameShape = cam.getResolutionSize()
     if camera_type == "mono_left":
@@ -151,6 +152,8 @@ with dai.Device(pipeline) as device:
 
             # Initialize min and max coordinates for 
             # the bounding box around the entire cube
+            fSize = 0.7
+            dy = 25
             xmin = np.inf
             xmax = 0
             ymin = np.inf
@@ -165,9 +168,18 @@ with dai.Device(pipeline) as device:
                 xmin = np.min([xmin, np.min(xpts)])
                 xmax = np.max([xmax, np.max(xpts)])
 
+                xtxt = np.max(xpts)
+                ytxt = np.max(ypts)
+
+                t = 1000 * np.squeeze(tvec[i])
                 # Draw the aruco tag border on the frame
                 frame = cv2.polylines(frame, [poly_pts], True, aruco_color, aruco_thickness)
-                frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec[i], tvec[i], 0.02)
+                frame = cv2.aruco.drawAxis(frame, camera_matrix, camera_distortion, rvec[i], tvec[i], 0.03)
+                # set_trace()
+                cv2.putText(frame, "x: %0.0f mm" % (t[0]), (int(xtxt), int(ytxt)), cv2.FONT_HERSHEY_TRIPLEX, fSize, (0,0,0))
+                cv2.putText(frame, "y: %0.0f mm" % (t[1]), (int(xtxt), int(ytxt + dy)), cv2.FONT_HERSHEY_TRIPLEX, fSize, (0,0,0))
+                cv2.putText(frame, "z: %0.0f mm" % (t[2]), (int(xtxt), int(ytxt + 2*dy)), cv2.FONT_HERSHEY_TRIPLEX, fSize, (0,0,0))
+
 
             
             

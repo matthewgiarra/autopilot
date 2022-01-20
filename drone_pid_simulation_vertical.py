@@ -4,12 +4,33 @@ import matplotlib.pyplot as plt
 import time
 from pdb import set_trace
 
+def ThrustFromThrottle(throttle = 0):
+    # Throttle should be -100 : 100
+    thrust = 7.848E-4 * throttle + 0.363 # Newtons
+    return thrust
+
 # Formatting
-xdot = u"\u1E8B(m/s)"
-xdotdot = u"\u1E8D(m/s\u00B2)" 
+xchar = "y(m)"
+xdot = u"\u1E8F(m/s)"
+xdotdot = u"\u00ff(m/s\u00B2)" 
+
+# Gains p, d, i gains
+# # Drive carefully 
+# kp = 10
+# kd = 50
+# ki = 0
+
+# MUST GO FASTER
+kp = 200
+kd = 180
+ki = 25
+
+
+# Mass is 39 grams
+mass = 0.039 # Kg
 
 # Target (set point) position
-x_sp = 0 # meters
+x_sp = 1 # meters
 
 # Initial time
 t = 0 # sec
@@ -23,36 +44,17 @@ s_dt = 2E-3
 # Run time
 # This particular pid library deals with
 # time steps internally, and has to run in real time
-run_time = 7 # sec
+run_time = 5 # sec
 
-# Gains p, d, i gains
-# # Drive carefully 
-# kp = 10
-# kd = 50
-# ki = 0
-
-# MUST GO FASTER
-kp = 80
-kd = 120
-ki = 0
-
-# Mass is 39 grams
-mass = 0.039 # Kg
-
-# Max force (thrust)
-max_force = 0.05 # Newtons
 
 # PID object
 pid = PID(Kp = kp, Ki = ki, Kd = kd)
 pid.setpoint = x_sp
+pid.output_limits = (-100, 100)
 
 # Initial state
-# x = 1 m, v = 0 m/s, a = 0 m/s^2
-state = np.array([[1, 0, 0]]).T
-
-# Initialize position array
-errSum = 0 # meters
-lastErr = 0 # meters
+# x = 0 m, v = 0 m/s, a = 0 m/s^2
+state = np.array([[0, 0, 0]]).T
 
 # Initialize time variables
 old_time = time.time() # sec
@@ -75,7 +77,11 @@ while count < steps:
     control_input = pid(state[0,0]) # Percent (-100 to 100)
 
     # Resultant force from control input
-    force = control_input / 100 * max_force # Newtons
+    # From linear fit to measured data
+    thrust = ThrustFromThrottle(control_input) # Newtons
+
+    # Sum of forces
+    force = thrust - mass * 9.81 # Newtons
 
     # Acceleration 
     accel = force / mass # m/s^2
@@ -84,9 +90,11 @@ while count < steps:
     state[-1, 0] = accel # m/s^2
 
     # Print the state
-    print("\tx(m)\t" + xdot + "\t" + xdotdot)
+    print("\t" + xchar + "\t" + xdot + "\t" + xdotdot)
     print("State: [%0.3f\t%0.3f\t%0.3f]" % tuple(state))
+    print("Error: %0.3f" % (x_sp - state[0,0]) )
     print("Control input: %0.3f" % control_input)
+    print("Net force: %0.2e N" % force)
     print("\n")
 
     # Time step
@@ -107,19 +115,21 @@ while count < steps:
 
 idx0 = 1 # Start index of the plot
 
+fontSize = "xx-large"
+
 # Make the figure
 fig = plt.figure()
-plt.plot(t_sec[idx0:], position[idx0:], '-k', t_sec[idx0:], velocity[idx0:], '-r', t_sec[idx0:], acceleration[idx0:], '-b')
+plt.plot(t_sec[idx0:], position[idx0:], '-k', t_sec[idx0:], velocity[idx0:], '-r', t_sec[idx0:], acceleration[idx0:], '-b', linewidth=3)
 plt.plot(t_sec, x_sp * np.ones(t_sec.shape), '--k')
-plt.legend(["x(m)", xdot, xdotdot], fontsize="large")
-plt.xticks(fontsize="large")
-plt.yticks(fontsize="large")
-plt.ylabel("State variable", fontsize="large")
-plt.xlabel("Time (sec)", fontsize = "large")
+plt.legend([xchar, xdot, xdotdot], fontsize=fontSize)
+plt.xticks(fontsize=fontSize)
+plt.yticks(fontsize=fontSize)
+plt.ylabel("State variable", fontsize=fontSize)
+plt.xlabel("Time (sec)", fontsize=fontSize)
 
 # Figure title
 title_gains_str = r'$K_p=%0.1f, K_d = %0.1f, K_i=%0.1f$' % (kp, kd, ki)
-fig.suptitle("Simulated system response with PID controller on lateral thrust\n1-D particle model with thrust and weight\n" + title_gains_str)
+fig.suptitle("Simulated system response with PID controller on vertical thrust\n1-D particle model with thrust and weight\n" + title_gains_str)
 
 plt.show()
 
