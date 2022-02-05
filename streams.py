@@ -1,13 +1,12 @@
 from constants import CKeys, CColors
 import zmq
 import numpy as np
-import datetime
 import sys
 from pdb import set_trace
 import os
 
 class DataFrame():
-    def __init__(self, tvec = np.array([0,0,0]), rvec = np.array([0,0,0]), kfErrorCov = None, timestamp = None, framenumber = 0):
+    def __init__(self, tvec = np.array([0,0,0]), rvec = np.array([0,0,0]), kfErrorCov = np.inf, timestamp = None, framenumber = 0):
         
         # Make them arrays if they're lists
         if isinstance(tvec, list):
@@ -95,20 +94,22 @@ class Subscriber():
         self.socket.setsockopt(zmq.SUBSCRIBE, b'') # This sets filter to "accept everything
         self.socket.setsockopt(zmq.CONFLATE, True)
     
-    def receive_frame(self, blocking = True):
+    def receive_frame(self, blocking = True, return_dict=False):
         if blocking is True:
             zmqFlags = 0
         else:
             zmqFlags = zmq.NOBLOCK
         try:
             msg = self.socket.recv_pyobj(flags=zmqFlags)
-            data = DataFrame()
-            data.tvec = msg[CKeys.TVEC]
-            data.rvec = msg[CKeys.RVEC]
-            data.kfErrorCov = msg[CKeys.KF_ERROR_COV]
-            data.timestamp = msg[CKeys.TIME_STAMP]
-            data.framenumber = msg[CKeys.FRAME_NUMBER]
-
+            if return_dict is True:
+                data = msg
+            else:
+                data = DataFrame()
+                data.tvec = msg[CKeys.TVEC]
+                data.rvec = msg[CKeys.RVEC]
+                data.kfErrorCov = msg[CKeys.KF_ERROR_COV]
+                data.timestamp = msg[CKeys.TIME_STAMP]
+                data.framenumber = msg[CKeys.FRAME_NUMBER]
         except zmq.error.ZMQError as err:
             data = None
         except Exception as err:
@@ -116,6 +117,5 @@ class Subscriber():
             print(CColors.FAIL + "<%s> ERROR: Deserialization error" % program_name)
             print(CColors.FAIL + str(err) + CColors.ENDC)
             sys.exit()
-        
         return data
         
