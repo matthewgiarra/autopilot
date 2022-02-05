@@ -1,9 +1,11 @@
 
+from constants import CKeys
 import CoDrone
 import numpy as np
 import pygame
-import time
+import streams
 import inspect
+import time
 from pdb import set_trace
 
 # ID of this drone
@@ -12,14 +14,17 @@ drone_id = 8898
 # Fake drone?
 drone_is_fake = False
 
+# Threshold value of trace(kalman error covariance matrix) for signaling "tracking locked"
+kf_err_cov_tracking_threshold = 0.1
+autopilot_available = False # Autopilot unavailable to start
+autopilot_armed = False
+autopilot_enabled = False # Autopilot disabled to start
+
 # Some constants
 PAD_DOWN=(0,-1)
 PAD_UP=(0,1)
 PAD_LEFT=(-1,0)
 PAD_RIGHT=(1,0)
-
-# trim = trim + (stick_position - bias)
-# input =  trim + (stick_position - bias)
 
 class controlInput():
     def __init__(self,roll=0,pitch=0,yaw=0,throttle=0):
@@ -66,12 +71,10 @@ class fakeDrone():
     def __init__(self):
         self.connected = False
         self.flying = False
-
     def isConnected(self):
         return self.connected
     def is_flying(self):
         return self.flying
-    
     def pair(self, drone_id = None):
         self.connected = True
         print_function_name()
@@ -91,8 +94,43 @@ class fakeDrone():
         print_function_name()
     def arm_pattern(self, Color=None, Mode=None, Speed=None):
         print_function_name()
+    def arm_color(self, Color=None, Brightness=None):
+        print_function_name()
     def reset_default_led(self):
         print_function_name()
+    def get_battery_percentage():
+        print_function_name()
+        return(100)
+
+class AutoPilot():
+    def __init__(self, available=False, armed = False, enabled=False, timeout = 0.5):
+        self.available = False
+        self.armed = False
+        self.enabled = False
+        self.timeout = timeout
+
+class AutoDrone(CoDrone.CoDrone):
+    def __init__(self):
+        super().__init__(self)
+        self.autopilot = AutoPilot(available=False, armed = False, enabled=False)
+        self.time = time.time()
+        self.led_update_min_time = 0.2 # Default to only updating LEDs every 0.2 seconds
+    
+    def update_leds(self):
+        now = time.time()
+        dt = now - self.time
+        if dt > self.led_update_min_time:
+            if self.autopilot.enabled is True:
+                # self.arm_color(CoDrone.Color.Blue, 100) # If the autopilot is enabled, arms steady blue
+                self.arm_pattern(CoDrone.Color.Blue, CoDrone.Mode.DOUBLE_BLINK, 155)
+                self.eye_color(CoDrone.Color.Blue, 100)
+            elif self.autopilot.available is True:
+                self.arm_pattern(CoDrone.Color.Blue, CoDrone.Mode.BLINK, 25)
+                self.eye_pattern(CoDrone.Color.Blue, CoDrone.Mode.BLINK, 25)
+            else:
+                self.arm_pattern(CoDrone.Color.White, CoDrone.Mode.DOUBLE_BLINK, 155) # If autopilot isn't available
+                self.eye_color(CoDrone.Color.White, 100)
+            self.time = now
 
 def get_controls(joystick, stick_sensitivity=100, scale_throttle = False, bias = controlInput()):
     # Sensitivity: 0-100, adjusts full range of controls
@@ -138,11 +176,17 @@ def A_PRESSED(joystick, button_id = 1):
 def Y_PRESSED(joystick, button_id = 3):
     return (joystick.get_button(button_id) == 1)
 
+# Set up the connection for accepting incoming data
+socket = 5555
+sub = streams.Subscriber(socket=socket)
+sub.connect()
+
 # Initialize some toggle states
 lb_down = False
 lt_down = False
 a_button_down = False
 y_button_down = False
+autopilot_led_on = False
 
 # Initialize stick sensitivity (min 0, max 100)
 stick_sensitivity = 100
@@ -157,7 +201,7 @@ trim = controlTrim()
 if drone_is_fake:
     drone = fakeDrone()
 else:
-    drone = CoDrone.CoDrone()
+    drone = AutoDrone()
 
 # Initialize pygame
 pygame.init()
@@ -167,7 +211,6 @@ joystick = pygame.joystick.Joystick(0)
 
 # Pressing "start" and "select" together pairs the drone
 print("Hello, CoDrone")
-print("Press start to pair.")
 
 # Get the stick bias
 biasRoll,biasPitch,biasYaw,biasThrottle = get_controls(joystick, stick_sensitivity=1, scale_throttle = True)
@@ -177,9 +220,10 @@ biasYaw = joystick.get_axis(0)
 biasThrottle = joystick.get_axis(1)
 stickBias = controlInput(roll=biasRoll, pitch=biasPitch, yaw=biasYaw,throttle=biasThrottle)
 print("Bias: " + str(stickBias))
-
+print("Press START to pair.")
 
 try:
+    # When this flag is true, the program exits
     done = False
     
     # Connect to the drone
@@ -195,15 +239,48 @@ try:
     print("Controls:")
     print("\tTake off: D-pad up")
     print("\tLand: D-pad down")
-    print("\tEmergency stop: start")
-    print("\tQuit: start + select")
+    print("\tEmergency stop: START")
+    print("\tToggle Autopilot: SELECT")
+    print("\tQuit: START + SELECT")
     
     # Initialize stick sensitivity so user can't screw themselves up too badly with initial settings
     stick_sensitivity = np.clip(stick_sensitivity, 10, 100)
 
+    # Timing stuff
+    then = time.time()
+
+    # Time since last autopilot frame
+    autopilot_data_time_prev = 0
+
     # while drone.isConnected(): # Replace with while drone.isConnected()
-    while drone.isConnected():
+    while drone.isConnected() and done is False:
+
+        # Before we access the controls, grab any incoming state data off the zmq queue
+        msg = sub.receive_frame(blocking=False, return_dict=True)
+        if msg is not None:
+            # print("Received message %d" % msg[CKeys.FRAME_NUMBER])
+            autopilot_data_time_prev = time.time()
+            if msg[CKeys.KF_ERROR_COV] < kf_err_cov_tracking_threshold:
+                drone.autopilot.available = True
+            else:
+                drone.autopilot.available = False
+                drone.autopilot.armed = False
+                drone.autopilot.enabled = False
+        else:
+            time_since_last_autopilot_frame = time.time() - autopilot_data_time_prev
+            if time_since_last_autopilot_frame > drone.autopilot.timeout: # If we don't get an autopilot signal within half a second, kill autopilot
+                drone.autopilot.available = False
+                drone.autopilot.armed = False
+                drone.autopilot.enabled = False
+
+        # Now read the control inputs
         for event in pygame.event.get(): # User did something.
+
+            # Kill the autopilot if we get any control input from the gamepad
+            if drone.autopilot.enabled is True and not selectPressed(joystick) and not event.type == pygame.JOYBUTTONUP:
+                drone.autopilot.armed = False
+                drone.autopilot.enabled = False
+                print("Killing autopilot")
             
             # User quits. Doesn't do anything for now.
             if event.type == pygame.QUIT: # If user clicked close.
@@ -219,24 +296,25 @@ try:
                         drone.emergency_stop()
                     # Start and select pressed: disconnect
                     if selectPressed(joystick):
-                        print("Unpairing CoDrone...")
-                        drone.disconnect()
-                        print("Drone unpaired")
+                        done = True
+
+                # Select: Enable autopilot
+                if selectPressed(joystick):
+                    # Toggle arming the autopilot
+                    drone.autopilot.armed = not(drone.autopilot.armed)
                 
                 # Left button down: Flash LEDs to indicate trimming
                 if LB_PRESSED(joystick):
-                    drone.arm_pattern(CoDrone.Color.Blue, CoDrone.Mode.BLINK, 25)
+                    # drone.arm_pattern(CoDrone.Color.Blue, CoDrone.Mode.BLINK, 25)
+
                     # TODO: Update joystick trim info so that we can fine-tune trimming
                     lb_down = not lb_down
                 
                 # Left trigger down: reset trim
                 if LT_PRESSED(joystick):
                     if lt_down is False:
-                        drone.arm_pattern(CoDrone.Color.White, CoDrone.Mode.BLINK, 25)
                         trim.zero()
-                        drone.reset_default_led()
                         lt_down = not lt_down # Toggle the LT
-                        # print(trim)
                         print("Reset trim: [r,p,y,t] = " + str(trim))
                 
                 # "A" button down (button 1): decrease stick sensitivity
@@ -258,6 +336,7 @@ try:
 
                 # Left button up 
                 # Set the trim to the stick positions when LB is released
+                # TODO: Change this to set the trim when the button is pressed, not when it's released.
                 if lb_down is True:
                     
                     # Get trim values
@@ -265,7 +344,6 @@ try:
                     
                     # Set trim
                     trim.update(roll=roll,pitch=pitch,yaw=yaw,throttle=throttle)
-                    drone.reset_default_led()
                     lb_down = not lb_down # Toggle the LB
                     # print(trim)
                     print("Set trim: [r,p,y,t] = " + str(trim))
@@ -310,6 +388,21 @@ try:
                     drone.move(roll, pitch, yaw, throttle)
                     print("[r,p,y,t] = %0.1f, %0.1f, %0.1f, %0.1f" % (roll, pitch, yaw, throttle))
 
+        # Determine the autopilot state
+        if drone.autopilot.available is True and drone.autopilot.armed is True:
+            drone.autopilot.enabled = True
+        else:
+            drone.autopilot.enabled = False
+
+        # End the timer
+        now = time.time()
+        fps = 1 / (now - then)
+        then = now
+        # Update the LEDs
+        drone.update_leds()
+
+        # print("%0.2f FPS" % fps)
+
 except Exception as e:
     print("Exception raised: " + str(e))
 
@@ -320,10 +413,17 @@ finally:
         
     # Disconnect from the drone
     if drone.isConnected():
-        drone.reset_default_led()
+        batteryLevel = drone.get_battery_percentage()
+        for x in range(10): # Spam this because it seems to not work every time
+            drone.all_colors(CoDrone.Color.Red, 255)
+        print("Battery: %d%%" % batteryLevel)
         print("Unpairing CoDrone...")
-        drone.disconnect()
+        for x in range(10):
+            drone.disconnect()
         print("Unpaired CoDrone.")
+    else:
+        print("Warning: CoDrone connection dropped!!!")
+        print("Done flag was " + str(done))
     print("Goodbye.")
 
 
