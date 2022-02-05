@@ -15,7 +15,7 @@ drone_id = 8898
 drone_is_fake = False
 
 # Threshold value of trace(kalman error covariance matrix) for signaling "tracking locked"
-kf_err_cov_tracking_threshold = 0.1
+kf_err_cov_tracking_threshold = 2.5
 autopilot_available = False # Autopilot unavailable to start
 autopilot_armed = False
 autopilot_enabled = False # Autopilot disabled to start
