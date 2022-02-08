@@ -4,7 +4,7 @@ import cv2
 from pdb import set_trace
 import traceback
 
-def create_aruco_cube(board_ids, aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50), cube_width_m = 0.0508, tag_width_m = 0.040):
+def create_aruco_cube(board_ids, aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50), cube_width_m = 0.0508, tag_width_m = 0.040, rvec = np.array([0,0,0])):
     # Create an "aruco cube" using the aruco board class
     # Order of tags in board_id should be: [front, right, back, left, top, bottom]
     # These face names are specified as though you are looking at the front side.
@@ -15,6 +15,8 @@ def create_aruco_cube(board_ids, aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco
     # Tag corners: If you rotate the cube to view a different face using 
     # only one rotation, the tag corners sould be:
     #   [0 1 2 3] = [top left, top right, bottom right, bottom left]
+    # rvec is a Rodrigues rotation vector by which to rotate the cube.
+    # The point of this is so you can reorient the cube without having to re-define all the corner positions.
 
     c = cube_width_m
     t = tag_width_m
@@ -26,6 +28,17 @@ def create_aruco_cube(board_ids, aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco
         np.array([ [-t/2, c/2, -t/2], [t/2, c/2, -t/2], [t/2, c/2, t/2],   [-t/2, c/2, t/2]],   dtype=np.float32),
         np.array([ [-t/2, -c/2, t/2], [t/2, -c/2, t/2], [t/2, -c/2, -t/2], [-t/2, -c/2, -t/2]], dtype=np.float32)
     ]
+
+    # # Rotate the board by the specified Rodrigues rotation
+    # Convert the Rodrigues rotation vector (axis, angle) to rotation matrix
+    # Second output is the Jacobian, which we don't need
+    rmat, _ = cv2.Rodrigues(rvec.astype(np.float32))
+
+    # Rotate the corners
+    # @ is matrix multiply, .T is transpose
+    board_corners = [(rmat @ corner.T).T for corner in board_corners]
+
+    # Make the board object
     board = cv2.aruco.Board_create(board_corners, aruco_dict, board_ids)
     return board
 
@@ -71,6 +84,30 @@ def getPoseMeasurement(frame, board, cameraMatrix, distCoeffs, arucoDict, parame
     detectedCorners, detectedIds, rejectedCorners, recoveredIdxs = cv2.aruco.refineDetectedMarkers(frame, board, 
         detectedCorners, detectedIds, rejectedCorners, 
         cameraMatrix = cameraMatrix, distCoeffs = distCoeffs, parameters=parameters)
+    
+    # Estimate the board pose if any tags were detected
+    valid = False
+    if len(detectedCorners) > 0:
+        [ret, rvec, tvec, valid] = estimatePoseBoardAndValidate(detectedCorners, detectedIds, board, cameraMatrix, distCoeffs, np.zeros(3), np.zeros(3))
+        
+    if valid is True:
+        measurement = np.concatenate([tvec, rvec], axis=0).astype(np.float64)
+    else:
+        measurement = np.array([])
+    return valid, measurement, detectedCorners, detectedIds
+
+def getCharucoPoseMeasurement(frame, board, cameraMatrix, distCoeffs, arucoDict, parameters):
+    try:
+        (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=parameters)
+    except:
+        # CORNER_REFINE_CONTOUR sometimes throws an error from LAPACK re: underdetermined systems. Not sure why.
+        # Switch the corner refinement method and try again.
+        parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_NONE
+        (detectedCorners, detectedIds, rejectedCorners) = cv2.aruco.detectMarkers(frame, arucoDict, parameters=parameters)
+    
+    
+    detectedCorners, detectedIds = cv2.aruco.interpolateCornersCharuco(markerCorners = detectedCorners, markerIds = detectedIds,
+     board = board, image = frame, cameraMatrix = cameraMatrix, distCoeffs = distCoeffs, minMarkers=2)
     
     # Estimate the board pose if any tags were detected
     valid = False
