@@ -78,8 +78,15 @@ aruco_cube_size_meters = 0.0508 # 2 inch cube
 board_ids = np.array([0, 1, 2, 3, 5, 4]) # 2 inch cube. There is actually no tag 5; need it to specify cube 
 # board_ids = np.array([5, 6, 7, 8, 9, 10]) # 4 inch cube
 
+# Board rotation
+board_rvec = np.array([0,0,np.pi])
+
 # Make the aruco cube
-board = aruco.create_aruco_cube(board_ids = board_ids, aruco_dict = arucoDict, cube_width_m = aruco_cube_size_meters, tag_width_m = aruco_tag_size_meters)
+board = aruco.create_aruco_cube(board_ids = board_ids, 
+    aruco_dict = arucoDict, 
+    cube_width_m = aruco_cube_size_meters,
+    tag_width_m = aruco_tag_size_meters, 
+    rvec = board_rvec)
 
 # DepthAI Pipeline
 pipeline = dai.Pipeline()
