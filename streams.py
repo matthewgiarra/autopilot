@@ -118,4 +118,14 @@ class Subscriber():
             print(CColors.FAIL + str(err) + CColors.ENDC)
             sys.exit()
         return data
+
+    def receive_last_frame(self):
+        msg = None
+        while True:
+            try:
+                msg = self.socket.recv_pyobj(flags=zmq.NOBLOCK)
+            except zmq.error.ZMQError as err:
+                break
+        return msg    
+
         

@@ -1,7 +1,9 @@
 
-from constants import CKeys
+from constants import CKeys, CColors
 import CoDrone
+from simple_pid import PID
 import numpy as np
+import cv2
 import pygame
 import streams
 import inspect
@@ -25,6 +27,43 @@ PAD_DOWN=(0,-1)
 PAD_UP=(0,1)
 PAD_LEFT=(-1,0)
 PAD_RIGHT=(1,0)
+
+# Target position in homogeneous camera coordinates (homogeneous coordinates, e.g., [x,y,z,1])
+xyz_target = np.array([0,0,0.8,1], dtype=np.float32)
+
+# Autopilot PID gains gains
+# gains_roll = [80, 40, 0] # Controls X coordinate (along pitch axis)
+# gains_thrust = [100, 0, 0] # Controls Y coordinate (along yaw axis)
+# gains_pitch = [80, 40, 0] # controls Z coortinate (along roll axis)
+
+# Autopilot PID gains gains
+gains_roll = [80, 80, 10] # Controls X coordinate (along pitch axis)
+gains_thrust = [100, 0, 1] # Controls Y coordinate (along yaw axis)
+gains_pitch = [80, 80, 10] # controls Z coortinate (along roll axis)
+
+# gains_roll = [20, 200, 0] # Controls X coordinate (along pitch axis)
+# gains_thrust = [200, 180, 25] # Controls Y coordinate (along yaw axis)
+# gains_pitch = [20, 200, 0] # controls Z coortinate (along roll axis)
+
+### This kind of worked!!
+# gains_roll = [100, 0, 0] # Controls X coordinate (along pitch axis)
+# gains_thrust = [0, 0, 0] # Controls Y coordinate (along yaw axis)
+# gains_pitch = [100, 0, 0] # controls Z coortinate (along roll axis)
+
+# gains_roll = [500, 875, 0] # Controls X coordinate (along pitch axis)
+# gains_thrust = [0, 0, 0] # Controls Y coordinate (along yaw axis)
+# gains_pitch = [500, 875, 0] # controls Z coortinate (along roll axis)
+
+# gains_roll = [500, 0, 0] # Controls X coordinate (along pitch axis)
+# gains_thrust = [0, 0, 0] # Controls Y coordinate (along yaw axis)
+# gains_pitch = [500, 0, 0] # controls Z coortinate (along roll axis)
+
+# gains_roll = [0, 0, 0] # Controls X coordinate (along pitch axis)
+# gains_thrust = [300, 0, 0] # Controls Y coordinate (along yaw axis)
+# gains_pitch = [0, 0, 0] # controls Z coortinate (along roll axis)
+
+# PID Gains list
+pid_gains = [gains_roll, gains_thrust, gains_pitch]
 
 class controlInput():
     def __init__(self,roll=0,pitch=0,yaw=0,throttle=0):
@@ -103,11 +142,76 @@ class fakeDrone():
         return(100)
 
 class AutoPilot():
-    def __init__(self, available=False, armed = False, enabled=False, timeout = 0.5):
+    def __init__(self, available=False, armed = False, enabled=False, timeout = 0.5, pid_gains = None, setpoint = None, output_limits = (-99,99)):
         self.available = False
         self.armed = False
         self.enabled = False
         self.timeout = timeout
+        
+        # Default PID gains
+        if pid_gains is None:
+            pid_gains = [np.array([0,0,0]) for i in range(3)]
+        if setpoint is None:
+            setpoint = np.zeros(len(pid_gains))
+
+        # Enforce they have the same length
+        if len(pid_gains) != len(setpoint):
+            raise ValueError("AutoPilot.__init__(): pid_gains and setpoint must have same length")
+
+        # PID controllers    
+        self.pid = []
+        for i, gains in enumerate(pid_gains):
+            pid = PID(Kp = gains[0], Kd = gains[1], Ki = gains[2], sample_time = None)
+            pid.output_limits = output_limits
+            if setpoint is not None:
+                pid.setpoint = setpoint[i]
+            self.pid.append(pid)
+        
+        # Control outputs
+        self.outputs = np.zeros(len(setpoint))
+
+    def print_outputs(self):
+        print(str(self.outputs))
+
+    def update(self, state, dt = None):
+        
+        # Make sure state and setpoint have the same size
+        if len(state) != len(self.pid):
+            raise ValueError("AutoPilot.update(state): length of state vector must equal number of states")
+        
+        # Update the control outputs
+        for i, s in enumerate(state): 
+            self.outputs[i] = self.pid[i](state[i], dt = dt)
+        return self.outputs
+
+    def set_setpoint(self, setpoint):
+        if len(setpoint) != len(self.pid):
+            raise ValueError("AutoPilot.set_setpoint(setpoint): length of setpoint vector must equal number of states")
+
+        # Update the setpoints    
+        for i, s in enumerate(setpoint):
+            self.pid[i].setpoint = s
+            
+    def off(self):
+        for pid in self.pid:
+            pid.auto_mode = False
+    
+    def on(self):
+        for i, pid in enumerate(self.pid):
+            pid.set_auto_mode(True, last_output=self.outputs[i])
+
+    def reset(self):
+        for pid in self.pid:
+            pid.reset()
+    
+    def set_pid_gains(self, pid_gains):
+        
+        if len(pid_gains) != len(self.pid):
+            raise ValueError("AutoPilot.set_pid_gains(pid_gains): length of pid_gains list must equal number of states")
+        for i, pid in enumerate(self.pid):
+            pid.Kp = pid_gains[i][0]
+            pid.Kd = pid_gains[i][1]
+            pid.Ki = pid_gains[i][2]
 
 class AutoDrone(CoDrone.CoDrone):
     def __init__(self):
@@ -131,6 +235,22 @@ class AutoDrone(CoDrone.CoDrone):
                 self.arm_pattern(CoDrone.Color.White, CoDrone.Mode.DOUBLE_BLINK, 155) # If autopilot isn't available
                 self.eye_color(CoDrone.Color.White, 100)
             self.time = now
+
+    def set_controls(self, state, dt=None):
+        pid_outputs = self.autopilot.update(state, dt = dt)
+        roll     =      pid_outputs[0] # roll controls x direction. -1 because x is flipped
+        pitch    =      pid_outputs[2] # pitch controls movement in z direction
+        throttle =      pid_outputs[1] # throttle controls altitude (y_xyz direction)
+
+        if len(pid_outputs) > 3:
+            yaw = pid_outputs[3]
+        else:
+            yaw = 0
+        if self.is_flying():
+            print("Autopilot [r,p,y,t] = %d,%d,%d,%d" % (roll, pitch, yaw, throttle))
+            self.move(roll, pitch, yaw, throttle)
+        controls_rpyt = [roll, pitch, yaw, throttle]
+        return controls_rpyt
 
 def get_controls(joystick, stick_sensitivity=100, scale_throttle = False, bias = controlInput()):
     # Sensitivity: 0-100, adjusts full range of controls
@@ -202,6 +322,8 @@ if drone_is_fake:
     drone = fakeDrone()
 else:
     drone = AutoDrone()
+    drone.autopilot.set_pid_gains(pid_gains = pid_gains)
+    drone.autopilot.set_setpoint(setpoint = [0,0,0])
 
 # Initialize pygame
 pygame.init()
@@ -250,16 +372,19 @@ try:
     then = time.time()
 
     # Time since last autopilot frame
-    autopilot_data_time_prev = 0
+    msg_received_time_prev = 0
+
+    # Set previous time step for autopilot state update
+    autopilot_timestamp_prev = None
 
     # while drone.isConnected(): # Replace with while drone.isConnected()
     while drone.isConnected() and done is False:
 
         # Before we access the controls, grab any incoming state data off the zmq queue
-        msg = sub.receive_frame(blocking=False, return_dict=True)
+        # msg = sub.receive_frame(blocking=False, return_dict=True)
+        msg = sub.receive_last_frame()
         if msg is not None:
-            # print("Received message %d" % msg[CKeys.FRAME_NUMBER])
-            autopilot_data_time_prev = time.time()
+            msg_received_time_prev = time.time()
             if msg[CKeys.KF_ERROR_COV] < kf_err_cov_tracking_threshold:
                 drone.autopilot.available = True
             else:
@@ -267,7 +392,7 @@ try:
                 drone.autopilot.armed = False
                 drone.autopilot.enabled = False
         else:
-            time_since_last_autopilot_frame = time.time() - autopilot_data_time_prev
+            time_since_last_autopilot_frame = time.time() - msg_received_time_prev
             if time_since_last_autopilot_frame > drone.autopilot.timeout: # If we don't get an autopilot signal within half a second, kill autopilot
                 drone.autopilot.available = False
                 drone.autopilot.armed = False
@@ -386,22 +511,74 @@ try:
                 roll, pitch, yaw, throttle = trim_controls(trim=trim, roll=roll, pitch=pitch,yaw=yaw,throttle=throttle)
                 if drone.is_flying():
                     drone.move(roll, pitch, yaw, throttle)
-                    print("[r,p,y,t] = %0.1f, %0.1f, %0.1f, %0.1f" % (roll, pitch, yaw, throttle))
+                    print("Joystick [r,p,y,t] = %0.1f, %0.1f, %0.1f, %0.1f" % (roll, pitch, yaw, throttle))
 
         # Determine the autopilot state
         if drone.autopilot.available is True and drone.autopilot.armed is True:
             drone.autopilot.enabled = True
         else:
             drone.autopilot.enabled = False
+            autopilot_timestamp_prev = None
+            drone.autopilot.reset() #TODO: Should we just set the autopilot to "off" here?
+
+        # If we got a message enabled, figure out the distance to the target location
+        if msg is not None:
+
+            # Read the timestamp and calculate the time interval
+            timestamp_now = msg[CKeys.TIME_STAMP]
+            lag = time.time() - timestamp_now
+            print("Lag = %0.2e sec" % lag)
+            if autopilot_timestamp_prev is None:
+                autopilot_dt = None
+            else:
+                autopilot_dt = timestamp_now - autopilot_timestamp_prev
+            
+            # Set the previous time stamp
+            autopilot_timestamp_prev = timestamp_now
+
+            # Read the rotation and translation vectors 
+            rvec = msg[CKeys.RVEC]
+            tvec = msg[CKeys.TVEC]
+
+            # Create homogeneous matrix to transform camera coordinates to drone coordinates
+            pose_mat = np.eye(4)
+            pose_mat[0:3, 0:3], _ = cv2.Rodrigues(rvec)
+            pose_mat[0:3, 3] = np.transpose(tvec)
+
+            # Transform xyz coordinates of target from camera coordinates to drone coordinates
+            # Factors of -1 are because the vector product below gives the coordinates
+            # of the target position in the frame of the drone, while the PID controller
+            # needs the position of the drone in the frame of the set point.
+            #
+            # dx is not multipled by -1 because the x axis of the cube is in the wrong direction
+            xyz_drone_target_frame_homogeneous = np.linalg.inv(pose_mat) @ xyz_target
+            dx =  1 * xyz_drone_target_frame_homogeneous[0] / xyz_drone_target_frame_homogeneous[-1]
+            dy = -1 * xyz_drone_target_frame_homogeneous[1] / xyz_drone_target_frame_homogeneous[-1]
+            dz = -1 * xyz_drone_target_frame_homogeneous[2] / xyz_drone_target_frame_homogeneous[-1]
+
+            # Print drone coordinates relative to set point
+            # if autopilot_dt is not None:
+                # print("[x,y,z] = [%0.0f, %0.0f, %0.0f] \\\ FPS = %0.1f \\\ lag = %0.2e sec" % (1000 * dx, 1000 * dy, 1000 * dz, 1 / autopilot_dt, time.time() - timestamp_now))
+                # print("FPS: %0.1f, lag = %0.2e sec" % (1/autopilot_dt, time.time() - timestamp_now))
+
+            # If the autopilot is enabled, set its controls
+            if drone.autopilot.enabled == True:
+                # Command the drone to move there
+                ctrls_rpyt = drone.set_controls(state = np.array([dx, dy, dz]), dt = autopilot_dt)
+
+                # print("<main> Autopilot [r,p,y,t] = %d, %d, %d, %d" % (ctrls_rpyt[0], ctrls_rpyt[1], ctrls_rpyt[2], ctrls_rpyt[3]))
+                # drone.autopilot.print_outputs()
+            
+            # Print the coordinates in mm
+            # print("Frame %d: [x, y, z] = %0.0f, %0.0f, %0.0f" % (msg[CKeys.FRAME_NUMBER], 1000 * dx, 1000 * dy, 1000 * dz))
 
         # End the timer
         now = time.time()
         fps = 1 / (now - then)
         then = now
+        
         # Update the LEDs
         drone.update_leds()
-
-        # print("%0.2f FPS" % fps)
 
 except Exception as e:
     print("Exception raised: " + str(e))

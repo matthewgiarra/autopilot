@@ -10,12 +10,36 @@ import sys
 import time
 from pdb import set_trace
 
+# Limit value of num to be within range (v0, v1)
+def clamp(num, v0, v1):
+    return max(v0, min(num, v1))
+
+# Manual exposure/focus set step
+# Exposure controls
+expTime = 2000
+expMin = 1
+expMax = 33000
+expStep = 500  # us
+
+# Sensitivity controls
+sensIso = 1600
+sensMin = 100
+sensMax = 1600
+isoStep = 50
+
 np.set_printoptions(precision=2)
 np.set_printoptions(floatmode = "fixed")
 
 # Output video path
-# out_video_path = "/Users/matthewgiarra/Desktop/codrone_aruco_with_hat_400p_30fps_01.avi"
 out_video_path = None
+# out_video_path = "/Users/matthewgiarra/Desktop/codrone_aruco_with_hat_400p_30fps_01.avi"
+# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_800p_03.avi"
+# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_800p_04.avi"
+# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_400p_05.avi"
+# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_400p_07.avi"
+# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_800p_07.avi"
+
+
 
 # Draw tracking? 
 draw_tracking_status = False
@@ -41,6 +65,9 @@ master_camera = "mono_right"
 # Which camera to use ("mono_left," "mono_right," or "color")
 camera_type = "mono_right"
 
+ # Target position in the image (homogeneous coordinates, e.g., [x,y,z,1])
+xyz_target = np.array([0,0,0.5,1], dtype=np.float32)
+
 # For plotting
 tracker_color = (0,255,255) # Line / text color
 tracker_thickness = 2 # Line thickness
@@ -58,6 +85,8 @@ xyz_size = 0.8
 arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
 arucoParams = cv2.aruco.DetectorParameters_create()
 arucoParams.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_CONTOUR
+# arucoParams.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_SUBPIX
+
 
 # # Aruco tag size in meters
 # # Small cube uses 40 mm tags
@@ -80,6 +109,7 @@ board_ids = np.array([0, 1, 2, 3, 5, 4]) # 2 inch cube. There is actually no tag
 
 # Board rotation
 board_rvec = np.array([0,0,np.pi])
+# board_rvec = np.array([0,0,0])
 
 # Make the aruco cube
 board = aruco.create_aruco_cube(board_ids = board_ids, 
@@ -92,8 +122,8 @@ board = aruco.create_aruco_cube(board_ids = board_ids,
 pipeline = dai.Pipeline()
 
 # Number of cameras
-cam_fps = 30
-video_fps = 30
+cam_fps = 60
+video_fps = 60
 
 # The reference coordinate system is cameraBoardSockets[0]
 cameraBoardSockets = [dai.CameraBoardSocket.LEFT, dai.CameraBoardSocket.RIGHT]
@@ -101,6 +131,10 @@ cameraBoardSockets = [dai.CameraBoardSocket.LEFT, dai.CameraBoardSocket.RIGHT]
 # Initialize lists of cameras and output links
 cameras = []
 xOutImages = []
+
+# Camera control node
+controlIn = pipeline.create(dai.node.XLinkIn)
+controlIn.setStreamName('control')
 
 # Set up pipeline
 for i in range(len(cameraBoardSockets)):
@@ -111,11 +145,15 @@ for i in range(len(cameraBoardSockets)):
     xOutImage.setStreamName("imageOut" + str(i))
 
     cam = pipeline.create(dai.node.MonoCamera)
-    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
+    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     cam.setFps(cam_fps)
     cam.setBoardSocket(cameraBoardSockets[i])
     cam.out.link(xOutImage.input)
 
+    # Control input
+    controlIn.out.link(cam.inputControl)
+
+    # Append camera to list of cams
     cameras.append(cam)
     xOutImages.append(xOutImage)
 
@@ -126,6 +164,9 @@ pub.connect()
 
 # Connect and start pipeline
 with dai.Device(pipeline) as device:
+
+    # Camera controls
+    controlQueue = device.getInputQueue(controlIn.getStreamName())
 
     # Get camera calibration info
     calibData = device.readCalibration()
@@ -179,10 +220,16 @@ with dai.Device(pipeline) as device:
     dt = 1 / cam.getFps() # Time step
 
     # Measurement noise
-    kf, dt_idx = kalman.kalmanFilter6DOFConstantVelocityMultiCam(dt = dt)
+    kf, dt_idx = kalman.kalmanFilter6DOFConstantVelocityMultiCam(dt = dt, measurementNoise = 0.05)
     H_ref = kf.measurementMatrix
     R_ref_diag = np.diag(kf.measurementNoiseCov)
 
+    # Initialize camera controls
+    ctrl = dai.CameraControl()
+    ctrl.setManualExposure(expTime, sensIso)
+    controlQueue.send(ctrl)
+
+    # Initialize counter
     count = 0
 
     # Main processing loop
@@ -216,6 +263,7 @@ with dai.Device(pipeline) as device:
             cameraMatrix = camera_matrices[i]
             distCoeffs    = camera_distortions[i]
 
+            # Measure the position and pose of the aruco board
             valid, measurement, detectedCorners, detectedIds = aruco.getPoseMeasurement(frame, board, 
             cameraMatrix=cameraMatrix, distCoeffs = distCoeffs, arucoDict = arucoDict, parameters=arucoParams)
 
@@ -239,11 +287,11 @@ with dai.Device(pipeline) as device:
                 cv2.putText(frame, "Kalman filter OFF",
                     (2, 25), cv2.FONT_HERSHEY_TRIPLEX, 1, (255,255,255))
 
-            if draw_aruco_axes is True and plotFiltered is False and valid is True and i == 0:
-                tvec = np.array(measurement[0:3])
-                rvec = np.array(measurement[3:])
-                drawing.draw_pose(frame, camera_matrix=cameraMatrix, camera_distortion=distCoeffs,
-                rvec=rvec,tvec=tvec, axis_size = 2*aruco_tag_size_meters)
+            # if draw_aruco_axes is True and plotFiltered is False and valid is True and i == 0:
+            #     tvec = np.array(measurement[0:3])
+            #     rvec = np.array(measurement[3:])
+            #     drawing.draw_pose(frame, camera_matrix=cameraMatrix, camera_distortion=distCoeffs,
+            #     rvec=rvec,tvec=tvec, axis_size = 2*aruco_tag_size_meters)
 
             # Transform measurement to reference camera's coordinate system
             if valid is True:
@@ -300,7 +348,7 @@ with dai.Device(pipeline) as device:
             framenumber = count)
         pub.send_frame(data=dataframe)
 
-        print("tr(Pk_k) = %0.2e" % errCovTrace)
+        # print("tr(Pk_k) = %0.2e" % errCovTrace)
 
         # Draw the axes on the rames
         for i, frame in enumerate(frames):
@@ -311,17 +359,26 @@ with dai.Device(pipeline) as device:
                 pose_mat = np.eye(4)
                 pose_mat[0:3, 0:3], _ = cv2.Rodrigues(rvec)
                 pose_mat[0:3, 3] = np.transpose(tvec)
-                pose_mat_transformed = np.matmul(camera_extrinsics[i], pose_mat)
-                pose_mat_transformed = pose_mat_transformed / pose_mat_transformed[3,3]
-                rvec_transformed, _ = cv2.Rodrigues(pose_mat_transformed[0:3, 0:3])
-                tvec_transformed = pose_mat_transformed[0:3, 3]
+                # pose_mat_transformed = np.matmul(camera_extrinsics[i], pose_mat)
+                # pose_mat_transformed = pose_mat_transformed / pose_mat_transformed[3,3]
+                # rvec_transformed, _ = cv2.Rodrigues(pose_mat_transformed[0:3, 0:3])
+                # tvec_transformed = pose_mat_transformed[0:3, 3]
+
+                # Target point in the board coordinates
+                xyz_target_board_frame_homogeneous = np.linalg.inv(pose_mat) @ xyz_target
+                
+                # XYZ of the target in drone-centered coordinate system, in mm 
+                xyz_t_d = 1000 * xyz_target_board_frame_homogeneous / xyz_target_board_frame_homogeneous[-1]
+
+                # Print the coordinates
+                # print("Frame %d: [x, y, z] = %0.2f, %0.2f, %0.2f" % (count, xyz_t_d[0], xyz_t_d[1], xyz_t_d[2]))
 
                 # Coordinates to plot
-                xyz = np.squeeze(tvec_transformed)
+                xyz = np.squeeze(tvec)
 
                 # Draw xyz
                 if draw_xyz:
-                    imagePoints, _ = cv2.projectPoints(objectPoints = tvec_transformed.astype(np.float32), rvec = np.array([0,0,0], dtype=np.float32), tvec = np.array([0,0,0], dtype=np.float32), cameraMatrix = camera_matrix, distCoeffs = camera_distortion)
+                    imagePoints, _ = cv2.projectPoints(objectPoints = tvec.astype(np.float32), rvec = np.array([0,0,0], dtype=np.float32), tvec = np.array([0,0,0], dtype=np.float32), cameraMatrix = camera_matrix, distCoeffs = camera_distortion)
                     xy = np.squeeze(imagePoints)
                     yc = int(xy[1])
                     xc = int(xy[0])
@@ -332,7 +389,6 @@ with dai.Device(pipeline) as device:
                         cv2.putText(frame, "Z: {:.0f} mm".format(xyz[2]*1000), (int(xc + xyz_xo), int(yc) + xyz_yo + 2 * xyz_dy), cv2.FONT_HERSHEY_TRIPLEX, xyz_size, xyz_color)
                     except Exception as err:
                         print(str(err))
-                        set_trace()
 
                 # Draw text saying that we're plotting filtered data
                 if plotFiltered is True:
@@ -340,7 +396,7 @@ with dai.Device(pipeline) as device:
                 
                 # Draw the pose
                 if draw_aruco_axes is True and plotFiltered is True:
-                    frame = drawing.draw_pose(frame, camera_matrices[i], camera_distortions[i], rvec_transformed, tvec_transformed, 2*aruco_tag_size_meters)
+                    frame = drawing.draw_pose(frame, camera_matrices[i], camera_distortions[i], rvec, tvec, 2*aruco_tag_size_meters)
 
                 # Display the image
                 frame_title = str(cameraBoardSockets[i])
@@ -351,9 +407,6 @@ with dai.Device(pipeline) as device:
             # frames_cat = np.concatenate(frames, axis=1)
             outVideo.write(frames[0])
 
-        # Print pose parameters to console
-        # print(np.squeeze(np.concatenate([tvec, rvec], axis=0).astype(np.float64)))
-        
         key=cv2.waitKey(1)
         if key == ord('q'):
             break
@@ -363,12 +416,29 @@ with dai.Device(pipeline) as device:
                 print("Debugging ON")
             else:
                 print("Debugging OFF")
-        elif key == ord('k'):
+        elif key == ord('f'):
             plotFiltered = not plotFiltered
             if plotFiltered: 
                 print("Kalman filter ON")
             else:
                 print("Kalman filter OFF")
+        elif key == ord('e'):
+            print("Autoexposure enable")
+            ctrl = dai.CameraControl()
+            ctrl.setAutoExposureEnable()
+            controlQueue.send(ctrl)
+        elif key in [ord('i'), ord('o'), ord('k'), ord('l')]:
+            if key == ord('i'): expTime -= expStep
+            if key == ord('o'): expTime += expStep
+            if key == ord('k'): sensIso -= isoStep
+            if key == ord('l'): sensIso += isoStep
+            expTime = clamp(expTime, expMin, expMax)
+            sensIso = clamp(sensIso, sensMin, sensMax)
+            print("Setting manual exposure, time:", expTime, "iso:", sensIso)
+            ctrl = dai.CameraControl()
+            ctrl.setManualExposure(expTime, sensIso)
+            controlQueue.send(ctrl)
+        
         count += 1
 
 # Close the video

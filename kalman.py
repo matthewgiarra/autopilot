@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import numbers
 from pdb import set_trace
 from numpy.core.numeric import True_
 
@@ -120,7 +121,12 @@ def kalmanFilter6DOFConstantVelocity(dt = 1/30, processNoise = 5E-3,  measuremen
     Q = processNoise * np.eye(dim_state, dtype=np.float64)
 
     # Covariance of measurement noise
-    R = measurementNoise * np.eye(dim_meas, dtype=np.float64)
+    if isinstance(measurementNoise, numbers.Number):
+        R = measurementNoise * np.eye(dim_meas, dtype=np.float64)
+    elif isinstance(measurementNoise, (list, np.ndarray)):
+        R = np.diag(measurementNoise)
+    else:
+        raise ValueError("Error in kalmanFilter6DOFConstantVelocityMultiCam(): measurementNoise must be a scalar, list, or numpy array, but supplied type is %s" % str(type(measurementNoise)))
 
     # kf.statePre: xk_km1
     # kf.errorCovPre: Pk_km1
@@ -181,7 +187,12 @@ def kalmanFilter6DOFConstantVelocityMultiCam(dt = 1/30, processNoise = 5E-3,  me
     Q = processNoise * np.eye(dim_state, dtype=np.float64)
 
     # Covariance of measurement noise
-    R = measurementNoise * np.eye(dim_meas, dtype=np.float64)
+    if isinstance(measurementNoise, numbers.Number):
+        R = measurementNoise * np.eye(dim_meas, dtype=np.float64)
+    elif isinstance(measurementNoise, (list, np.ndarray)):
+        R = np.diag(measurementNoise)
+    else:
+        raise ValueError("Error in kalmanFilter6DOFConstantVelocityMultiCam(): measurementNoise must be a scalar, list, or numpy array, but supplied type is %s" % str(type(measurementNoise)))
 
     # kf.statePre: xk_km1
     # kf.errorCovPre: Pk_km1
