@@ -10,11 +10,26 @@ import sys
 import time
 from pdb import set_trace
 
+# Function to calculate the camera intrinsic matrix for a cropped field of view
+def getCroppedCameraIntrinsics(cameraId, resizeWidth = -1, resizeHeight = -1, topLeftPixelID = dai.Point2f()):
+
+    # Get the default intrinsic matrix (uncropped)
+    camera_matrix = calibData.getCameraIntrinsics(cameraId, resizeWidth=resizeWidth, resizeHeight=resizeHeight)
+
+    # Update the translation components of the matrix according to the crop location
+    camera_matrix[0][2] -= topLeft.x * img_width
+    camera_matrix[1][2] -= topLeft.y * img_height
+
+    return camera_matrix
+
+# Printing options
+np.set_printoptions(precision=2)
+np.set_printoptions(floatmode = "fixed")
+
 # Limit value of num to be within range (v0, v1)
 def clamp(num, v0, v1):
     return max(v0, min(num, v1))
 
-# Manual exposure/focus set step
 # Exposure controls
 expTime = 2000
 expMin = 1
@@ -27,19 +42,11 @@ sensMin = 100
 sensMax = 1600
 isoStep = 50
 
-np.set_printoptions(precision=2)
-np.set_printoptions(floatmode = "fixed")
+# Step size for crop location ('W','A','S','D' controls)
+cropLocationStepSize = 0.02
 
 # Output video path
 out_video_path = None
-# out_video_path = "/Users/matthewgiarra/Desktop/codrone_aruco_with_hat_400p_30fps_01.avi"
-# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_800p_03.avi"
-# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_800p_04.avi"
-# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_400p_05.avi"
-# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_400p_07.avi"
-# out_video_path = "/Users/matthewgiarra/Desktop/codrone_autopilot_800p_07.avi"
-
-
 
 # Draw tracking? 
 draw_tracking_status = False
@@ -85,8 +92,6 @@ xyz_size = 0.8
 arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
 arucoParams = cv2.aruco.DetectorParameters_create()
 arucoParams.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_CONTOUR
-# arucoParams.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_SUBPIX
-
 
 # # Aruco tag size in meters
 # # Small cube uses 40 mm tags
@@ -123,7 +128,8 @@ pipeline = dai.Pipeline()
 
 # Number of cameras
 cam_fps = 60
-video_fps = 60
+fpsStepSize = 5
+video_fps = 20
 
 # The reference coordinate system is cameraBoardSockets[0]
 cameraBoardSockets = [dai.CameraBoardSocket.LEFT, dai.CameraBoardSocket.RIGHT]
@@ -131,27 +137,50 @@ cameraBoardSockets = [dai.CameraBoardSocket.LEFT, dai.CameraBoardSocket.RIGHT]
 # Initialize lists of cameras and output links
 cameras = []
 xOutImages = []
+imageManips = []
 
 # Camera control node
 controlIn = pipeline.create(dai.node.XLinkIn)
 controlIn.setStreamName('control')
 
+# Camera config node
+configIn = pipeline.create(dai.node.XLinkIn)
+configIn.setStreamName('config')
+sendCamConfig = False
+
+# Initial crop range
+topLeft = dai.Point2f(0.0, 0.0)
+bottomRight = dai.Point2f(1.0, 1.0)
+
 # Set up pipeline
 for i in range(len(cameraBoardSockets)):
 
+    # Mono camera nodes
+    cam = pipeline.create(dai.node.MonoCamera)
+    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
+    cam.setFps(cam_fps)
+    cam.setBoardSocket(cameraBoardSockets[i])
+
+    # Image manipulation nodes
+    imageManip = pipeline.create(dai.node.ImageManip)
+
+    # Output nodes
     xOutImage = pipeline.create(dai.node.XLinkOut)
     xOutImage.input.setBlocking(False)
     xOutImage.input.setQueueSize(1)
     xOutImage.setStreamName("imageOut" + str(i))
 
-    cam = pipeline.create(dai.node.MonoCamera)
-    cam.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-    cam.setFps(cam_fps)
-    cam.setBoardSocket(cameraBoardSockets[i])
-    cam.out.link(xOutImage.input)
+    # Cropping etc
+    imageManip.initialConfig.setCropRect(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y)
+    imageManip.setMaxOutputFrameSize(cam.getResolutionHeight()*cam.getResolutionWidth()*3)
 
-    # Control input
+    # Link camera control / config
     controlIn.out.link(cam.inputControl)
+    configIn.out.link(imageManip.inputConfig)
+
+    # Link stuff
+    cam.out.link(imageManip.inputImage)
+    imageManip.out.link(xOutImage.input)
 
     # Append camera to list of cams
     cameras.append(cam)
@@ -165,8 +194,9 @@ pub.connect()
 # Connect and start pipeline
 with dai.Device(pipeline) as device:
 
-    # Camera controls
+    # Control and config queues
     controlQueue = device.getInputQueue(controlIn.getStreamName())
+    configQueue = device.getInputQueue(configIn.getStreamName())
 
     # Get camera calibration info
     calibData = device.readCalibration()
@@ -189,8 +219,8 @@ with dai.Device(pipeline) as device:
     camera_matrices = []
     camera_distortions = []
     for cam in cameras:
-        resolution = cam.getResolutionSize()
-        camera_matrix = np.array(calibData.getCameraIntrinsics(cam.getBoardSocket(), resizeWidth=resolution[0], resizeHeight=resolution[1]))
+        img_width, img_height = cam.getResolutionSize()
+        camera_matrix = np.array(calibData.getCameraIntrinsics(cam.getBoardSocket(), resizeWidth=img_width, resizeHeight=img_height))
         camera_distortion = np.array(calibData.getDistortionCoefficients(cam.getBoardSocket()))[:-2]
         
         camera_matrices.append(camera_matrix)
@@ -198,7 +228,7 @@ with dai.Device(pipeline) as device:
 
     # Open a video writer object
     if out_video_path is not None:
-        video_resolution = (resolution[0], resolution[1])
+        video_resolution = (img_width, img_height)
         outVideo = cv2.VideoWriter(out_video_path, cv2.VideoWriter_fourcc('M','J','P','G'), video_fps, video_resolution)
     else:
         outVideo = None
@@ -220,7 +250,7 @@ with dai.Device(pipeline) as device:
     dt = 1 / cam.getFps() # Time step
 
     # Measurement noise
-    kf, dt_idx = kalman.kalmanFilter6DOFConstantVelocityMultiCam(dt = dt, measurementNoise = 0.05)
+    kf, dt_idx = kalman.kalmanFilter6DOFConstantVelocityMultiCam(dt = dt)
     H_ref = kf.measurementMatrix
     R_ref_diag = np.diag(kf.measurementNoiseCov)
 
@@ -287,12 +317,6 @@ with dai.Device(pipeline) as device:
                 cv2.putText(frame, "Kalman filter OFF",
                     (2, 25), cv2.FONT_HERSHEY_TRIPLEX, 1, (255,255,255))
 
-            # if draw_aruco_axes is True and plotFiltered is False and valid is True and i == 0:
-            #     tvec = np.array(measurement[0:3])
-            #     rvec = np.array(measurement[3:])
-            #     drawing.draw_pose(frame, camera_matrix=cameraMatrix, camera_distortion=distCoeffs,
-            #     rvec=rvec,tvec=tvec, axis_size = 2*aruco_tag_size_meters)
-
             # Transform measurement to reference camera's coordinate system
             if valid is True:
                 
@@ -328,8 +352,6 @@ with dai.Device(pipeline) as device:
             kf.measurementMatrix = H
             kf.measurementNoiseCov = R
 
-            # print("Loop %d" % count)
-
             # Correct state prediction (calculate xk_k)
             kf.correct(measurement)
 
@@ -359,19 +381,12 @@ with dai.Device(pipeline) as device:
                 pose_mat = np.eye(4)
                 pose_mat[0:3, 0:3], _ = cv2.Rodrigues(rvec)
                 pose_mat[0:3, 3] = np.transpose(tvec)
-                # pose_mat_transformed = np.matmul(camera_extrinsics[i], pose_mat)
-                # pose_mat_transformed = pose_mat_transformed / pose_mat_transformed[3,3]
-                # rvec_transformed, _ = cv2.Rodrigues(pose_mat_transformed[0:3, 0:3])
-                # tvec_transformed = pose_mat_transformed[0:3, 3]
 
                 # Target point in the board coordinates
                 xyz_target_board_frame_homogeneous = np.linalg.inv(pose_mat) @ xyz_target
                 
                 # XYZ of the target in drone-centered coordinate system, in mm 
                 xyz_t_d = 1000 * xyz_target_board_frame_homogeneous / xyz_target_board_frame_homogeneous[-1]
-
-                # Print the coordinates
-                # print("Frame %d: [x, y, z] = %0.2f, %0.2f, %0.2f" % (count, xyz_t_d[0], xyz_t_d[1], xyz_t_d[2]))
 
                 # Coordinates to plot
                 xyz = np.squeeze(tvec)
@@ -427,6 +442,8 @@ with dai.Device(pipeline) as device:
             ctrl = dai.CameraControl()
             ctrl.setAutoExposureEnable()
             controlQueue.send(ctrl)
+
+        # Set exposure and ISO
         elif key in [ord('i'), ord('o'), ord('k'), ord('l')]:
             if key == ord('i'): expTime -= expStep
             if key == ord('o'): expTime += expStep
@@ -438,7 +455,78 @@ with dai.Device(pipeline) as device:
             ctrl = dai.CameraControl()
             ctrl.setManualExposure(expTime, sensIso)
             controlQueue.send(ctrl)
+
+        # Move crop up
+        elif key == ord('w'):
+            if topLeft.y - cropLocationStepSize >= 0:
+                topLeft.y -= cropLocationStepSize
+                bottomRight.y -= cropLocationStepSize
+                sendCamConfig = True
+
+        # Move crop left
+        elif key == ord('a'):
+            if topLeft.x - cropLocationStepSize >= 0:
+                topLeft.x -= cropLocationStepSize
+                bottomRight.x -= cropLocationStepSize
+                sendCamConfig = True
         
+        # Move crop down
+        elif key == ord('s'):
+            if bottomRight.y + cropLocationStepSize <= 1:
+                topLeft.y += cropLocationStepSize
+                bottomRight.y += cropLocationStepSize
+                sendCamConfig = True
+
+        # Move crop right
+        elif key == ord('d'):
+            if bottomRight.x + cropLocationStepSize <= 1:
+                topLeft.x += cropLocationStepSize
+                bottomRight.x += cropLocationStepSize
+                sendCamConfig = True
+
+        # Make image bigger       
+        elif key == ord('='):
+            topLeft.x -= cropLocationStepSize
+            topLeft.y -= cropLocationStepSize
+            bottomRight.x += cropLocationStepSize
+            bottomRight.y += cropLocationStepSize
+            sendCamConfig = True
+
+        # Make image smaller
+        elif key == ord('-'):
+            topLeft.x += cropLocationStepSize
+            topLeft.y += cropLocationStepSize
+            bottomRight.x -= cropLocationStepSize
+            bottomRight.y -= cropLocationStepSize
+            sendCamConfig = True
+
+        # Update camera config (cropping)
+        if sendCamConfig is True:
+
+            # Clamp the image corner coordinates so the size can never go to 0
+            topLeft.x = clamp(topLeft.x, 0.0, 0.9)
+            topLeft.y = clamp(topLeft.y, 0.0, 0.9)
+            bottomRight.x = clamp(bottomRight.x, topLeft.x + 0.1, 1.0)
+            bottomRight.y = clamp(bottomRight.y, topLeft.y + 0.1, 1.0)
+
+            # Configure the image crop
+            cfg = dai.ImageManipConfig()
+            cfg.setCropRect(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y)
+            
+            # Send the image crop command to the camera
+            configQueue.send(cfg)
+
+            # Update the camera intrinsic matrices according to the new crop
+            camera_matrices = []
+            for cam in cameras:
+                topLeftPixel = dai.Point2f(topLeft.x * img_width, topLeft.y * img_height)
+                camera_matrix = np.array(getCroppedCameraIntrinsics(cam.getBoardSocket(), resizeWidth = img_width, resizeHeight = img_height, topLeftPixelID = topLeftPixel))
+                camera_matrices.append(camera_matrix)            
+
+            # No more cam config sending
+            sendCamConfig = False
+        
+        # Update loop counter
         count += 1
 
 # Close the video
