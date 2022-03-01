@@ -11,10 +11,13 @@ import time
 from pdb import set_trace
 
 # Function to calculate the camera intrinsic matrix for a cropped field of view
-def getCroppedCameraIntrinsics(cameraId, resizeWidth = -1, resizeHeight = -1, topLeftPixelID = dai.Point2f()):
+def getCroppedCameraIntrinsics(calibData, cameraId, topLeft = dai.Point2f()):
+
+    # Image height and width
+    img_width, img_height = cameraId.getResolutionSize()
 
     # Get the default intrinsic matrix (uncropped)
-    camera_matrix = calibData.getCameraIntrinsics(cameraId, resizeWidth=resizeWidth, resizeHeight=resizeHeight)
+    camera_matrix = calibData.getCameraIntrinsics(cameraId.getBoardSocket(), resizeWidth=img_width, resizeHeight=img_height)
 
     # Update the translation components of the matrix according to the crop location
     camera_matrix[0][2] -= topLeft.x * img_width
@@ -80,12 +83,13 @@ tracker_color = (0,255,255) # Line / text color
 tracker_thickness = 2 # Line thickness
 aruco_edge_color = (0,0,255) # Line / text color
 aruco_edge_thickness = 2 # Line thickness
+frames_to_plot = [0,1]
 
 # For plotting coordinates
 xyz_xo = 0
 xyz_dy = 35
 xyz_yo = int(-3.5 * xyz_dy)
-xyz_color = (0,0,0)
+xyz_color = (0,255,255)
 xyz_size = 0.8
 
 # Aruco stuff
@@ -127,9 +131,9 @@ board = aruco.create_aruco_cube(board_ids = board_ids,
 pipeline = dai.Pipeline()
 
 # Number of cameras
-cam_fps = 60
+cam_fps = 40
 fpsStepSize = 5
-video_fps = 20
+video_fps = 40
 
 # The reference coordinate system is cameraBoardSockets[0]
 cameraBoardSockets = [dai.CameraBoardSocket.LEFT, dai.CameraBoardSocket.RIGHT]
@@ -149,8 +153,8 @@ configIn.setStreamName('config')
 sendCamConfig = False
 
 # Initial crop range
-topLeft = dai.Point2f(0.0, 0.0)
-bottomRight = dai.Point2f(1.0, 1.0)
+topLeft = dai.Point2f(0.2, 0.2)
+bottomRight = dai.Point2f(0.8, 0.8)
 
 # Set up pipeline
 for i in range(len(cameraBoardSockets)):
@@ -220,18 +224,30 @@ with dai.Device(pipeline) as device:
     camera_distortions = []
     for cam in cameras:
         img_width, img_height = cam.getResolutionSize()
-        camera_matrix = np.array(calibData.getCameraIntrinsics(cam.getBoardSocket(), resizeWidth=img_width, resizeHeight=img_height))
-        camera_distortion = np.array(calibData.getDistortionCoefficients(cam.getBoardSocket()))[:-2]
+
+        # Intrinsic matrix
+        camera_matrix = np.array(getCroppedCameraIntrinsics(calibData, cam, topLeft = topLeft))
         
+        # Distortion coeffs
+        camera_distortion = np.array(calibData.getDistortionCoefficients(cam.getBoardSocket()))[:-2]
+
+        # Append matrices to lists
         camera_matrices.append(camera_matrix)
         camera_distortions.append(camera_distortion)
 
     # Open a video writer object
     if out_video_path is not None:
-        video_resolution = (img_width, img_height)
+
+        # Figure out the video resolution
+        videoWidthPixels  = int((bottomRight.x - topLeft.x) * cameras[0].getResolutionWidth())
+        videoHeightPixels = int((bottomRight.y - topLeft.y) * cameras[0].getResolutionHeight())
+        video_resolution = (videoWidthPixels, videoHeightPixels)
+
+        # Open the videowriter
         outVideo = cv2.VideoWriter(out_video_path, cv2.VideoWriter_fourcc('M','J','P','G'), video_fps, video_resolution)
     else:
         outVideo = None
+        video_resolution = (0,0)
     
     # Listen for data on the device xLinkOut queue
     image_out_queues = []
@@ -261,6 +277,15 @@ with dai.Device(pipeline) as device:
 
     # Initialize counter
     count = 0
+
+    # Set up plotting windows
+    for i, boardSock in enumerate(cameraBoardSockets):
+        if i in frames_to_plot:
+            # How far to shift image windows
+            dx_image_windows = int((bottomRight.x - topLeft.x) * cameras[i].getResolutionWidth())
+            fTitle = str(boardSock)
+            cv2.namedWindow(fTitle)
+            cv2.moveWindow(fTitle, i * dx_image_windows, 0)
 
     # Main processing loop
     while True:
@@ -294,12 +319,11 @@ with dai.Device(pipeline) as device:
             distCoeffs    = camera_distortions[i]
 
             # Measure the position and pose of the aruco board
-            valid, measurement, detectedCorners, detectedIds = aruco.getPoseMeasurement(frame, board, 
-            cameraMatrix=cameraMatrix, distCoeffs = distCoeffs, arucoDict = arucoDict, parameters=arucoParams)
+            valid, measurement, detectedCorners, detectedIds = aruco.getPoseMeasurement(frame, board, cameraMatrix=cameraMatrix, distCoeffs = distCoeffs, arucoDict = arucoDict, parameters=arucoParams)
 
             # Estimate the board pose if any tags were detected
-            if len(detectedCorners) > 0 and i == 0:
-                
+            if len(detectedCorners) > 0 and i in frames_to_plot:
+
                 # Draw IDs?
                 if draw_aruco_ids is True:
                     frame = drawing.draw_ids(frame, detectedCorners, detectedIds)
@@ -313,7 +337,7 @@ with dai.Device(pipeline) as device:
                 if draw_tracking_status is True:
                     frame = drawing.draw_tracking(frame, detectedCorners)
 
-            if plotFiltered is False and i == 0:
+            if plotFiltered is False and i in frames_to_plot:
                 cv2.putText(frame, "Kalman filter OFF",
                     (2, 25), cv2.FONT_HERSHEY_TRIPLEX, 1, (255,255,255))
 
@@ -333,7 +357,7 @@ with dai.Device(pipeline) as device:
                 measurements.append(measurement)
             
             # Draw FPS on frame
-            if i == 0:
+            if i in frames_to_plot:
                 frame = drawing.draw_fps(frame, 1/dt)
 
             # Upate frames vector
@@ -370,12 +394,10 @@ with dai.Device(pipeline) as device:
             framenumber = count)
         pub.send_frame(data=dataframe)
 
-        # print("tr(Pk_k) = %0.2e" % errCovTrace)
-
         # Draw the axes on the rames
         for i, frame in enumerate(frames):
 
-            if i == 0:
+            if i in frames_to_plot:
 
                 # Transform cube coordinates into current camera's frame of ref
                 pose_mat = np.eye(4)
@@ -408,19 +430,34 @@ with dai.Device(pipeline) as device:
                 # Draw text saying that we're plotting filtered data
                 if plotFiltered is True:
                     cv2.putText(frame, "Kalman filter ON", (2, 25), cv2.FONT_HERSHEY_TRIPLEX, 1, (255,255,255))
-                
-                # Draw the pose
-                if draw_aruco_axes is True and plotFiltered is True:
-                    frame = drawing.draw_pose(frame, camera_matrices[i], camera_distortions[i], rvec, tvec, 2*aruco_tag_size_meters)
+
+                if draw_aruco_axes is True and i == 0:
+                    if plotFiltered is True:
+                        frame = drawing.draw_pose(frame, camera_matrices[i], camera_distortions[i], rvec, tvec, 2*aruco_tag_size_meters)
+                    else:
+                        if len(measurements) > 0:
+                            tvec = np.array(measurements[0][:3])
+                            rvec = np.array(measurements[0][3:])
+                            frame = drawing.draw_pose(frame, camera_matrices[i], camera_distortions[i], rvec, tvec, 2*aruco_tag_size_meters)
 
                 # Display the image
+                frame_title = str(cameraBoardSockets[i])
+                cv2.imshow(frame_title, frame)
+            else:
                 frame_title = str(cameraBoardSockets[i])
                 cv2.imshow(frame_title, frame)
 
         # Write the video frame
         if outVideo is not None:
-            # frames_cat = np.concatenate(frames, axis=1)
-            outVideo.write(frames[0])
+            
+            # If the size of the video and the size of the frame aren't equal, close the videoWriter and make a new one of the correct size. Any previously-written frames are lost! 
+            if frames[0].shape[:2] != video_resolution[::-1]:
+                outVideo.release()
+                videoWidthPixels = frames[0].shape[1]
+                videoHeightPixels = frames[0].shape[0]
+                video_resolution = (videoWidthPixels, videoHeightPixels)
+                outVideo = cv2.VideoWriter(out_video_path, cv2.VideoWriter_fourcc('M','J','P','G'), video_fps, video_resolution)
+            outVideo.write(frames[0]) # Write the frame to the output video
 
         key=cv2.waitKey(1)
         if key == ord('q'):
@@ -520,7 +557,7 @@ with dai.Device(pipeline) as device:
             camera_matrices = []
             for cam in cameras:
                 topLeftPixel = dai.Point2f(topLeft.x * img_width, topLeft.y * img_height)
-                camera_matrix = np.array(getCroppedCameraIntrinsics(cam.getBoardSocket(), resizeWidth = img_width, resizeHeight = img_height, topLeftPixelID = topLeftPixel))
+                camera_matrix = np.array(getCroppedCameraIntrinsics(calibData, cam, topLeft = topLeft))
                 camera_matrices.append(camera_matrix)            
 
             # No more cam config sending
